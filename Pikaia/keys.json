@@ -1,0 +1,6 @@
+// gitignore later
+{
+    "anthropic": "sk-ant-...",
+    "openai":    "sk-...",
+    "ollama":    null
+}

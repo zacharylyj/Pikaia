@@ -1,0 +1,11 @@
+  {
+    "model_id":       "claude-sonnet-4-6",
+    "provider":       "anthropic",
+    "call_format":    "messages",
+    "strengths":      ["general tasks", "code", "orchestration"],
+    "weaknesses":     ["not cheapest for simple tasks"],
+    "context_window": 200000,
+    "cost_tier":      "medium",
+    "speed_tier":     "medium",
+    "enabled":        true
+  }
