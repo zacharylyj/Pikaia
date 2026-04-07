@@ -1,0 +1,114 @@
+[
+  {
+    "tool_id":     "shell_exec",
+    "description": "Run a shell command in a subprocess",
+    "impl":        "tools/impl/shell_exec.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "code_exec",
+    "description": "Run Python or JS in an isolated sandbox subprocess",
+    "impl":        "tools/impl/code_exec.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "file_read",
+    "description": "Read a file as a string, scope-enforced per caller type",
+    "impl":        "tools/impl/file_read.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "file_write",
+    "description": "Write or overwrite a file, path-enforced per caller type",
+    "impl":        "tools/impl/file_write.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "file_delete",
+    "description": "Delete a file or empty directory — orchestrator only",
+    "impl":        "tools/impl/file_delete.py",
+    "permissions": ["orchestrator"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "file_move",
+    "description": "Move or rename files; promotes worker outputs to dev/ — orchestrator only",
+    "impl":        "tools/impl/file_move.py",
+    "permissions": ["orchestrator"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "http_request",
+    "description": "Generic REST call with method/url/headers/body/timeout",
+    "impl":        "tools/impl/http_request.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "web_fetch",
+    "description": "Fetch a URL and return clean readable text (HTML stripped)",
+    "impl":        "tools/impl/web_fetch.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "cli_output",
+    "description": "Print formatted response to terminal — orchestrator only",
+    "impl":        "tools/impl/cli_output.py",
+    "permissions": ["orchestrator"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "send_message",
+    "description": "Send a message via Telegram, Discord, or Slack",
+    "impl":        "tools/impl/send_message.py",
+    "permissions": ["orchestrator", "agent"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "llm_call",
+    "description": "Pipeline resolver + provider router for LLM calls",
+    "impl":        "tools/impl/llm_call.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "embed_text",
+    "description": "Generate a fixed-dim embedding vector for a string",
+    "impl":        "tools/impl/embed_text.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "memory_read",
+    "description": "Unified read across LT / MT / CT / ST / History memory layers",
+    "impl":        "tools/impl/memory_read.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "memory_write",
+    "description": "Write to a memory layer — orchestrator only; agents use ct_close()",
+    "impl":        "tools/impl/memory_write.py",
+    "permissions": ["orchestrator"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "skill_read",
+    "description": "Fetch active skill schema + template text by skill_id",
+    "impl":        "tools/impl/skill_read.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "skill_write",
+    "description": "Write a new skill version to the registry — SkillSmith only, post human gate",
+    "impl":        "tools/impl/skill_write.py",
+    "permissions": ["skillsmith"],
+    "enabled":     true
+  }
+]
