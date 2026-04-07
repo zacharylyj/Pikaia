@@ -110,5 +110,12 @@
     "impl":        "tools/impl/skill_write.py",
     "permissions": ["skillsmith"],
     "enabled":     true
+  },
+  {
+    "tool_id":     "ct_close",
+    "description": "Close a CT flag by task_id — orchestrator or the owning agent",
+    "impl":        "tools/impl/ct_close.py",
+    "permissions": ["orchestrator", "agent"],
+    "enabled":     true
   }
 ]

@@ -409,11 +409,27 @@ class Orchestrator:
     def _build_context(self, message: str) -> TurnContext:
         ctx = TurnContext()
 
-        # LT — always full
+        # LT — always full; overlay preferences.json on top
         try:
             ctx.lt_entries = self.tools.memory_read("lt", project=self.project)
         except Exception as e:
             logger.warning("LT read failed: %s", e)
+
+        # preferences.json overlay: merge preference keys into LT view
+        try:
+            prefs_path = self._project_path("preferences.json")
+            if prefs_path.exists():
+                prefs: dict = json.loads(prefs_path.read_text())
+                for k, v in prefs.items():
+                    # Inject as synthetic LT entries so context builder sees them
+                    ctx.lt_entries.append({
+                        "id":       f"pref_{k}",
+                        "content":  f"{k}: {v}",
+                        "category": "preference",
+                        "source":   "preferences.json",
+                    })
+        except Exception as e:
+            logger.warning("Preferences overlay failed: %s", e)
 
         # MT — RAG on (ST summary + message)
         try:
@@ -566,6 +582,26 @@ class Orchestrator:
                 return None
 
             query_vec = self.tools.embed_text(message)
+
+            # Auto-compute and cache embeddings for skills that are missing one
+            skills_dirty = False
+            for skill in active:
+                if not skill.get("embedding"):
+                    try:
+                        emb = self.tools.embed_text(
+                            skill.get("description", skill.get("name", ""))
+                        )
+                        skill["embedding"] = emb
+                        skills_dirty = True
+                    except Exception as e:
+                        logger.warning("Skill embed failed for %s: %s", skill.get("skill_id"), e)
+
+            if skills_dirty:
+                try:
+                    skills_path.write_text(json.dumps(skills, indent=2))
+                except Exception as e:
+                    logger.warning("Could not save updated skill embeddings: %s", e)
+
             scored: list[tuple[float, dict]] = []
             for skill in active:
                 emb = skill.get("embedding")
@@ -733,61 +769,24 @@ class Orchestrator:
 
     def _spawn_agent(self, record: AgentRecord, task_packet: dict, ctx: TurnContext) -> None:
         """
-        Spawns the agent in a thread.
-        In phase 5 this becomes a real Agent class.
-        For now it writes a stub ack and state so the monitor can proceed.
+        Spawns the agent in a daemon thread using the real AgentRunner.
+        AgentRunner handles the ack/state/result lifecycle internally.
         """
-        def _run():
-            worker = Path(record.worker_dir)
+        import sys
+        # Ensure Pikaia package is importable from this repo layout
+        _pikaia_dir = str(self.base_path)
+        if _pikaia_dir not in sys.path:
+            sys.path.insert(0, _pikaia_dir)
+
+        from agent import AgentRunner
+        record_dict = record.meta_dict()
+        base_path   = str(self.base_path)
+
+        def _run() -> None:
             try:
-                # Stage 2 — generate ack via llm_call
-                ack = self._generate_ack(record, task_packet)
-                (worker / "ack.json").write_text(json.dumps(ack, indent=2))
-
-                # Validate ack
-                ok, reason = self._validate_ack(ack, task_packet, record)
-                if not ok:
-                    logger.warning("Ack invalid (%s) — aborting agent %s", reason, record.agent_id)
-                    self._mark_agent_done(record, status="failed", output=f"Ack failed: {reason}")
-                    return
-
-                self._status(f"Ack received (confidence: {ack.get('confidence', '?')}) — proceeding")
-
-                # Stage 3 — write initial state
-                state = {
-                    "task_id":      record.task_id,
-                    "status":       "running",
-                    "step_current": 0,
-                    "step_total":   len(ack.get("planned_steps", [])),
-                    "steps_done":   [],
-                    "step_next":    ack.get("planned_steps", ["(none)"])[0] if ack.get("planned_steps") else "",
-                    "tokens_used":  0,
-                    "issues":       [],
-                }
-                (worker / "state.json").write_text(json.dumps(state, indent=2))
-
-                # --- Real agent execution goes here in phase 5 ---
-                # For now: call llm_call with the task and write result
-                resp = self.tools.llm_call(
-                    pipeline=record.pipeline,
-                    system=ctx.to_system_prompt(),
-                    messages=[{"role": "user", "content": task_packet["objective"]}],
-                    max_tokens=min(record.token_budget, 4096),
-                )
-
-                # Update state to done
-                state["status"]       = "done"
-                state["step_current"] = state["step_total"]
-                state["tokens_used"]  = resp.get("tokens_in", 0) + resp.get("tokens_out", 0)
-                (worker / "state.json").write_text(json.dumps(state, indent=2))
-
-                output = resp.get("content", "")
-                confidence = 0.9  # real agents score their own output
-
-                self._mark_agent_done(record, status="done", output=output, confidence=confidence)
-
+                AgentRunner.run(task_packet, record_dict, base_path)
             except Exception as exc:
-                logger.exception("Agent %s crashed: %s", record.agent_id, exc)
+                logger.exception("Agent %s crashed in runner: %s", record.agent_id, exc)
                 self._mark_agent_done(record, status="failed", output=str(exc))
 
         t = threading.Thread(target=_run, daemon=True, name=f"agent-{record.agent_id}")
@@ -986,7 +985,10 @@ class Orchestrator:
                     logger.warning("Promote failed for %s: %s", f.name, e)
 
     def _reindex_file(self, path: str) -> None:
-        """Trigger file_indexing pipeline to generate summary + embedding."""
+        """
+        Trigger file_indexing pipeline to generate summary + embedding.
+        Updates both Layer 2 (dev/index.json) and Layer 1 (file_index.json).
+        """
         try:
             content = self.tools.file_read(path)
             resp = self.tools.llm_call(
@@ -995,20 +997,40 @@ class Orchestrator:
                 messages=[{"role": "user", "content": content[:4000]}],
                 max_tokens=150,
             )
-            summary = resp.get("content", "")
+            summary   = resp.get("content", "")
             embedding = self.tools.embed_text(summary)
 
+            # Layer 2 — dev/index.json (semantic RAG index)
             dev_idx_path = self._project_path("dev", "index.json")
-            index = {}
+            dev_idx_path.parent.mkdir(parents=True, exist_ok=True)
+            dev_index: dict = {}
             if dev_idx_path.exists():
-                index = json.loads(dev_idx_path.read_text())
-            index[path] = {
+                try:
+                    dev_index = json.loads(dev_idx_path.read_text())
+                except Exception:
+                    pass
+            dev_index[path] = {
                 "summary":      summary,
                 "tags":         [],
                 "embedding":    embedding,
                 "last_indexed": _now_iso()[:10],
             }
-            dev_idx_path.write_text(json.dumps(index, indent=2))
+            _atomic_write_json(dev_idx_path, dev_index)
+
+            # Layer 1 — file_index.json (flat path registry)
+            fi_path = self._project_path("file_index.json")
+            file_index: dict = {}
+            if fi_path.exists():
+                try:
+                    file_index = json.loads(fi_path.read_text())
+                except Exception:
+                    pass
+            file_index[path] = {
+                "summary":      summary[:120],
+                "last_indexed": _now_iso()[:10],
+            }
+            _atomic_write_json(fi_path, file_index)
+
             self._status(f"Re-indexed {path}")
         except Exception as e:
             logger.warning("Re-index failed for %s: %s", path, e)
@@ -1168,37 +1190,152 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _trigger_skillsmith(self, message: str, ctx: TurnContext) -> None:
-        """Open a CT skill_approval flag and kick off SkillSmith pipeline."""
-        draft_id = f"draft-{uuid.uuid4().hex[:8]}"
+        """
+        SkillSmith pipeline:
+          1. Draft skill schema (skillsmith_draft pipeline)
+          2. Run up to skillsmith_dry_runs dry-run evaluations
+          3. If eval passes (score >= skillsmith_pass_score), save draft
+          4. Open CT pending_approval flag regardless (human must approve)
+        """
+        draft_id   = f"draft-{uuid.uuid4().hex[:8]}"
+        draft_dir  = self._project_path("worker", "skillsmith", draft_id)
+        draft_dir.mkdir(parents=True, exist_ok=True)
+
+        # ---- 1. Draft ----
+        draft: dict = {}
         try:
             resp = self.tools.llm_call(
                 pipeline="skillsmith_draft",
                 system=(
-                    "You are SkillSmith. Draft a skill schema for this capability gap. "
-                    "Output JSON matching the skills.json entry schema. "
-                    "Include: name, description, tier (1-4), tags, tools_required."
+                    "You are SkillSmith. Draft a skill schema for this capability gap.\n"
+                    "Output ONLY JSON with keys: name, description, tier (1–4), "
+                    "tags (list), tools_required (list), template (prompt template string)."
                 ),
                 messages=[{"role": "user", "content": f"Capability needed: {message}"}],
-                max_tokens=512,
+                max_tokens=768,
             )
-            draft = json.loads(resp["content"])
-            draft["skill_id"]    = draft_id
-            draft["version"]     = 1
-            draft["active"]      = False
-            draft["created_by"]  = "auto"
-            draft["created_at"]  = _now_iso()
+            raw = resp["content"].strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            draft = json.loads(raw)
         except Exception as e:
             logger.warning("SkillSmith draft failed: %s", e)
-            draft = {"skill_id": draft_id, "name": "Draft skill", "description": message}
 
+        draft.setdefault("name",          "Draft skill")
+        draft.setdefault("description",   message)
+        draft.setdefault("tier",          2)
+        draft.setdefault("tags",          [])
+        draft.setdefault("tools_required", [])
+        draft.setdefault("template",      "Complete the task: {{objective}}")
+        draft["skill_id"]   = draft_id
+        draft["version"]    = 1
+        draft["active"]     = False
+        draft["created_by"] = "auto"
+        draft["created_at"] = _now_iso()
+
+        # Save initial draft
+        (draft_dir / "draft.json").write_text(json.dumps(draft, indent=2))
+        self._status(f"SkillSmith drafted: {draft['name']}")
+
+        # ---- 2. Dry runs ----
+        best_score = 0.0
+        for run_n in range(1, self.config.skillsmith_dry_runs + 1):
+            try:
+                eval_resp = self.tools.llm_call(
+                    pipeline="skillsmith_eval",
+                    system=(
+                        "You are a skill evaluator. Score how well the given skill draft "
+                        "satisfies the capability requirement. "
+                        "Output JSON: {\"score\": 0.0–1.0, \"feedback\": \"...\", \"pass\": true|false}"
+                    ),
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Capability needed: {message}\n\n"
+                            f"Skill draft:\n{json.dumps(draft, indent=2)}"
+                        ),
+                    }],
+                    max_tokens=256,
+                    temperature=0.0,
+                )
+                eval_raw = eval_resp["content"].strip()
+                if eval_raw.startswith("```"):
+                    eval_raw = eval_raw.split("```")[1]
+                    if eval_raw.startswith("json"):
+                        eval_raw = eval_raw[4:]
+                evaluation = json.loads(eval_raw)
+                score      = float(evaluation.get("score", 0.0))
+                feedback   = evaluation.get("feedback", "")
+                passed     = evaluation.get("pass", False)
+
+                self._status(
+                    f"SkillSmith dry run {run_n}/{self.config.skillsmith_dry_runs}: "
+                    f"score={score:.2f}, pass={passed}"
+                )
+                (draft_dir / f"eval_{run_n}.json").write_text(json.dumps(evaluation, indent=2))
+
+                best_score = max(best_score, score)
+                if passed or score >= self.config.skillsmith_pass_score:
+                    break
+
+                # Refine draft with feedback
+                if feedback:
+                    try:
+                        refine_resp = self.tools.llm_call(
+                            pipeline="skillsmith_draft",
+                            system=(
+                                "You are SkillSmith. Revise the skill draft based on feedback. "
+                                "Output ONLY the updated JSON skill object."
+                            ),
+                            messages=[{
+                                "role": "user",
+                                "content": (
+                                    f"Current draft:\n{json.dumps(draft, indent=2)}\n\n"
+                                    f"Evaluator feedback: {feedback}"
+                                ),
+                            }],
+                            max_tokens=768,
+                        )
+                        ref_raw = refine_resp["content"].strip()
+                        if ref_raw.startswith("```"):
+                            ref_raw = ref_raw.split("```")[1]
+                            if ref_raw.startswith("json"):
+                                ref_raw = ref_raw[4:]
+                        updated = json.loads(ref_raw)
+                        # Preserve identity fields
+                        for key in ("skill_id", "version", "active", "created_by", "created_at"):
+                            updated[key] = draft[key]
+                        draft = updated
+                        draft["version"] += 1
+                        (draft_dir / "draft.json").write_text(json.dumps(draft, indent=2))
+                    except Exception as re:
+                        logger.warning("SkillSmith refine failed: %s", re)
+
+            except Exception as e:
+                logger.warning("SkillSmith eval run %d failed: %s", run_n, e)
+
+        # ---- 3. Save final draft with embedding ----
+        try:
+            draft["embedding"] = self.tools.embed_text(draft["description"])
+        except Exception:
+            pass
+        (draft_dir / "draft.json").write_text(json.dumps(draft, indent=2))
+
+        # ---- 4. Open CT pending_approval flag ----
         ct_entry = {
             "id":           str(uuid.uuid4()),
             "type":         "skill_approval",
-            "description":  f"SkillSmith drafted: {draft.get('name', 'New skill')}",
+            "description":  (
+                f"SkillSmith drafted: {draft['name']} "
+                f"(best eval score: {best_score:.2f})"
+            ),
             "task_id":      None,
             "agent_id":     None,
             "instance_id":  self.instance_id,
             "skill_id":     draft_id,
+            "draft_path":   str(draft_dir / "draft.json"),
             "webui_action": "skill_approval_modal",
             "opened_at":    _now_iso(),
             "status":       "pending_approval",
@@ -1291,3 +1428,20 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write JSON atomically via a temp file."""
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

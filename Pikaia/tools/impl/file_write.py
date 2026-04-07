@@ -3,10 +3,10 @@ file_write
 ----------
 Write or overwrite a file with atomic write + path enforcement.
 
-Path enforcement:
-  orchestrator : dev/**, memory/** under base_path
-  agent        : worker/{agent_id}/** only
-  skillsmith   : worker/skillsmith/** only
+Path enforcement (paths resolved relative to base_path):
+  orchestrator : projects/**, memory/** under base_path
+  agent        : projects/{project}/worker/{agent_id}/** only
+  skillsmith   : projects/{project}/worker/skillsmith/** only
 
 params:
     path    : str   - path relative to base_path (or absolute)
@@ -26,43 +26,59 @@ from pathlib import Path
 from typing import Any
 
 
-def _check_write_scope(rel: Path, caller: str, agent_id: str | None) -> bool:
-    parts = list(rel.parts)
+def _allowed_roots(base: Path, caller: str, context: dict) -> list[Path]:
+    project  = context.get("project", "")
+    agent_id = context.get("agent_id")
+
     if caller == "orchestrator":
-        return parts[0] in ("dev", "memory", "projects")
+        roots = [base / "memory"]
+        if project:
+            roots.append(base / "projects" / project)
+        else:
+            roots.append(base / "projects")
+        return roots
+
     if caller == "agent":
-        if agent_id and parts[:2] == ["worker", agent_id]:
-            return True
-        return False
+        if project and agent_id:
+            return [base / "projects" / project / "worker" / agent_id]
+        return []
+
     if caller == "skillsmith":
-        return parts[:2] == ["worker", "skillsmith"]
-    return False
+        if project:
+            return [base / "projects" / project / "worker" / "skillsmith"]
+        return []
+
+    return []
+
+
+def _within(full: Path, roots: list[Path]) -> bool:
+    s = str(full.resolve())
+    return any(s.startswith(str(r.resolve())) for r in roots)
 
 
 def run(params: dict, context: dict) -> dict[str, Any]:
     base_path = Path(context["base_path"])
     caller    = context.get("caller", "orchestrator")
-    agent_id  = context.get("agent_id")
 
-    raw_path = Path(params["path"])
-    if raw_path.is_absolute():
-        full_path = raw_path
+    raw = Path(params["path"])
+    if raw.is_absolute():
+        full_path = raw.resolve()
         try:
-            rel = full_path.relative_to(base_path)
+            rel = full_path.relative_to(base_path.resolve())
         except ValueError:
-            raise PermissionError(f"Path '{raw_path}' is outside base_path '{base_path}'")
+            raise PermissionError(f"Path '{raw}' is outside base_path '{base_path}'")
     else:
-        rel       = raw_path
-        full_path = base_path / raw_path
+        full_path = (base_path / raw).resolve()
+        rel       = raw
 
-    if not _check_write_scope(rel, caller, agent_id):
+    roots = _allowed_roots(base_path, caller, context)
+    if not _within(full_path, roots):
         raise PermissionError(
-            f"Caller '{caller}' is not allowed to write to '{rel}'"
+            f"Caller '{caller}' is not allowed to write to '{rel}'. "
+            f"Allowed roots: {[str(r.relative_to(base_path)) for r in roots]}"
         )
 
     content = params["content"]
-
-    # Atomic write: write to a temp file in the same directory, then rename
     full_path.parent.mkdir(parents=True, exist_ok=True)
 
     fd, tmp_path = tempfile.mkstemp(dir=full_path.parent, prefix=".tmp_")
