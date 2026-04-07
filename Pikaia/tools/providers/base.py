@@ -5,13 +5,14 @@ Abstract contract all provider adapters must implement.
 
 Standard response dict (all adapters must return this from parse_response):
 {
-    "content":    str,
-    "tokens_in":  int,
-    "tokens_out": int,
-    "model_id":   str,
-    "provider":   str,
-    "stop_reason": str,
-    "tool_calls": list[dict],   # populated when stop_reason == "tool_use"
+    "content":        str,           # concatenated text from all text blocks
+    "content_blocks": list[dict],    # raw blocks (text + tool_use) for agent tool loop
+    "tokens_in":      int,
+    "tokens_out":     int,
+    "model_id":       str,
+    "provider":       str,
+    "stop_reason":    str,
+    "tool_calls":     list[dict],    # populated when stop_reason == "tool_use"
 }
 """
 
@@ -64,18 +65,20 @@ class BaseAdapter(ABC):
 
     def _standard_response(
         self,
-        content:     str,
-        tokens_in:   int,
-        tokens_out:  int,
-        stop_reason: str,
-        tool_calls:  list[dict] | None = None,
+        content:        str,
+        tokens_in:      int,
+        tokens_out:     int,
+        stop_reason:    str,
+        tool_calls:     list[dict] | None = None,
+        content_blocks: list[dict] | None = None,
     ) -> dict[str, Any]:
         return {
-            "content":    content,
-            "tokens_in":  tokens_in,
-            "tokens_out": tokens_out,
-            "model_id":   self.model_id,
-            "provider":   self.provider_name,
-            "stop_reason": stop_reason,
-            "tool_calls": tool_calls or [],
+            "content":        content,
+            "content_blocks": content_blocks or [],
+            "tokens_in":      tokens_in,
+            "tokens_out":     tokens_out,
+            "model_id":       self.model_id,
+            "provider":       self.provider_name,
+            "stop_reason":    stop_reason,
+            "tool_calls":     tool_calls or [],
         }

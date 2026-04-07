@@ -1,3 +1,4 @@
+[
   {
     "model_id":       "claude-sonnet-4-6",
     "provider":       "anthropic",
@@ -8,4 +9,60 @@
     "cost_tier":      "medium",
     "speed_tier":     "medium",
     "enabled":        true
+  },
+  {
+    "model_id":       "claude-opus-4-6",
+    "provider":       "anthropic",
+    "call_format":    "messages",
+    "strengths":      ["complex reasoning", "research", "long context"],
+    "weaknesses":     ["slower", "most expensive"],
+    "context_window": 200000,
+    "cost_tier":      "high",
+    "speed_tier":     "slow",
+    "enabled":        true
+  },
+  {
+    "model_id":       "claude-haiku-4-5-20251001",
+    "provider":       "anthropic",
+    "call_format":    "messages",
+    "strengths":      ["fast", "cheap", "classification", "compression"],
+    "weaknesses":     ["less capable for complex tasks"],
+    "context_window": 200000,
+    "cost_tier":      "low",
+    "speed_tier":     "fast",
+    "enabled":        true
+  },
+  {
+    "model_id":       "gpt-4o",
+    "provider":       "openai",
+    "call_format":    "messages",
+    "strengths":      ["multimodal", "code", "general tasks"],
+    "weaknesses":     ["not cheapest"],
+    "context_window": 128000,
+    "cost_tier":      "medium",
+    "speed_tier":     "medium",
+    "enabled":        true
+  },
+  {
+    "model_id":       "gpt-4o-mini",
+    "provider":       "openai",
+    "call_format":    "messages",
+    "strengths":      ["cheap", "fast", "simple tasks"],
+    "weaknesses":     ["less capable than gpt-4o"],
+    "context_window": 128000,
+    "cost_tier":      "low",
+    "speed_tier":     "fast",
+    "enabled":        true
+  },
+  {
+    "model_id":       "llama3.2",
+    "provider":       "ollama",
+    "call_format":    "messages",
+    "strengths":      ["local", "private", "no API cost"],
+    "weaknesses":     ["requires local GPU/CPU"],
+    "context_window": 128000,
+    "cost_tier":      "free",
+    "speed_tier":     "variable",
+    "enabled":        true
   }
+]

@@ -110,5 +110,19 @@
     "impl":        "tools/impl/skill_write.py",
     "permissions": ["skillsmith"],
     "enabled":     true
+  },
+  {
+    "tool_id":     "ct_close",
+    "description": "Close a CT flag by task_id — orchestrator or the owning agent",
+    "impl":        "tools/impl/ct_close.py",
+    "permissions": ["orchestrator", "agent"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "context_fetch",
+    "description": "Retrieve relevant context on demand. Agent provides a plain-English query; tool returns MT knowledge + file snippets ready to use.",
+    "impl":        "tools/impl/context_fetch.py",
+    "permissions": ["agent", "skillsmith"],
+    "enabled":     true
   }
 ]

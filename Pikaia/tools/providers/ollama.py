@@ -88,19 +88,21 @@ class Adapter(BaseAdapter):
         raise last_exc  # type: ignore[misc]
 
     def parse_response(self, raw: dict[str, Any]) -> dict[str, Any]:
-        message    = raw.get("message", {})
-        content    = message.get("content", "")
+        message     = raw.get("message", {})
+        content     = message.get("content", "")
         stop_reason = "end_turn" if raw.get("done") else "max_tokens"
 
-        # Ollama token counts (may not always be present)
         tokens_in  = raw.get("prompt_eval_count", 0)
         tokens_out = raw.get("eval_count", 0)
 
+        content_blocks = [{"type": "text", "text": content}] if content else []
+
         return self._standard_response(
-            content     = content,
-            tokens_in   = tokens_in,
-            tokens_out  = tokens_out,
-            stop_reason = stop_reason,
+            content        = content,
+            tokens_in      = tokens_in,
+            tokens_out     = tokens_out,
+            stop_reason    = stop_reason,
+            content_blocks = content_blocks,
         )
 
     def validate_key(self) -> bool:

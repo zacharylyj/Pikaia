@@ -97,28 +97,39 @@ class Adapter(BaseAdapter):
         raise last_exc  # type: ignore[misc]
 
     def parse_response(self, raw: dict[str, Any]) -> dict[str, Any]:
-        content    = ""
-        tool_calls: list[dict] = []
+        content         = ""
+        tool_calls:     list[dict] = []
+        content_blocks: list[dict] = []
 
         for block in raw.get("content", []):
-            if block.get("type") == "text":
+            btype = block.get("type")
+            if btype == "text":
                 content += block.get("text", "")
-            elif block.get("type") == "tool_use":
-                tool_calls.append({
+                content_blocks.append({"type": "text", "text": block.get("text", "")})
+            elif btype == "tool_use":
+                tc = {
                     "id":    block.get("id"),
                     "name":  block.get("name"),
                     "input": block.get("input", {}),
+                }
+                tool_calls.append(tc)
+                content_blocks.append({
+                    "type":  "tool_use",
+                    "id":    tc["id"],
+                    "name":  tc["name"],
+                    "input": tc["input"],
                 })
 
         usage       = raw.get("usage", {})
         stop_reason = raw.get("stop_reason", "end_turn")
 
         return self._standard_response(
-            content     = content,
-            tokens_in   = usage.get("input_tokens", 0),
-            tokens_out  = usage.get("output_tokens", 0),
-            stop_reason = stop_reason,
-            tool_calls  = tool_calls,
+            content        = content,
+            tokens_in      = usage.get("input_tokens", 0),
+            tokens_out     = usage.get("output_tokens", 0),
+            stop_reason    = stop_reason,
+            tool_calls     = tool_calls,
+            content_blocks = content_blocks,
         )
 
     def validate_key(self) -> bool:

@@ -99,31 +99,44 @@ class Adapter(BaseAdapter):
         raise last_exc  # type: ignore[misc]
 
     def parse_response(self, raw: dict[str, Any]) -> dict[str, Any]:
-        choice     = raw.get("choices", [{}])[0]
-        message    = choice.get("message", {})
-        content    = message.get("content") or ""
+        choice      = raw.get("choices", [{}])[0]
+        message     = choice.get("message", {})
+        content     = message.get("content") or ""
         stop_reason = choice.get("finish_reason", "stop")
 
-        tool_calls: list[dict] = []
+        tool_calls:     list[dict] = []
+        content_blocks: list[dict] = []
+
+        if content:
+            content_blocks.append({"type": "text", "text": content})
+
         for tc in message.get("tool_calls") or []:
             fn = tc.get("function", {})
             try:
                 input_args = json.loads(fn.get("arguments", "{}"))
             except json.JSONDecodeError:
                 input_args = {}
-            tool_calls.append({
+            parsed_tc = {
                 "id":    tc.get("id"),
                 "name":  fn.get("name"),
                 "input": input_args,
+            }
+            tool_calls.append(parsed_tc)
+            content_blocks.append({
+                "type":  "tool_use",
+                "id":    parsed_tc["id"],
+                "name":  parsed_tc["name"],
+                "input": parsed_tc["input"],
             })
 
         usage = raw.get("usage", {})
         return self._standard_response(
-            content     = content,
-            tokens_in   = usage.get("prompt_tokens", 0),
-            tokens_out  = usage.get("completion_tokens", 0),
-            stop_reason = stop_reason,
-            tool_calls  = tool_calls,
+            content        = content,
+            tokens_in      = usage.get("prompt_tokens", 0),
+            tokens_out     = usage.get("completion_tokens", 0),
+            stop_reason    = stop_reason,
+            tool_calls     = tool_calls,
+            content_blocks = content_blocks,
         )
 
     def validate_key(self) -> bool:
