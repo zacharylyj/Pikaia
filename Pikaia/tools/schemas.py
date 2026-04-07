@@ -180,6 +180,37 @@ SCHEMAS: dict[str, dict] = {
             "required": ["task_id", "status"],
         },
     },
+
+    "context_fetch": {
+        "name": "context_fetch",
+        "description": (
+            "Retrieve relevant context on demand. Provide a plain-English description of what "
+            "you need to know. Returns knowledge from the memory base and relevant file snippets. "
+            "Call this whenever you realise you're missing information needed to complete the task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Plain-English description of the context or information you need",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max results per source (default: 5)",
+                },
+                "include_files": {
+                    "type": "boolean",
+                    "description": "Whether to include file snippets (default: true)",
+                },
+                "max_chars_per_file": {
+                    "type": "integer",
+                    "description": "Max characters to read per file snippet (default: 1500)",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 }
 
 

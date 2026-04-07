@@ -164,19 +164,20 @@ class OrchestratorConfig:
     poll_interval_secs:     float = 3.0
 
     pipelines: dict[str, str] = field(default_factory=lambda: {
-        "orchestration":     "claude-sonnet-4-6",
-        "task_planning":     "claude-sonnet-4-6",
-        "research":          "claude-opus-4-6",
-        "council_agent":     "claude-opus-4-6",
-        "council_synthesis": "claude-opus-4-6",
-        "code_generation":   "claude-sonnet-4-6",
-        "compression":       "claude-haiku-4-5-20251001",
-        "classification":    "claude-haiku-4-5-20251001",
-        "file_indexing":     "claude-haiku-4-5-20251001",
-        "mt_judge":          "claude-haiku-4-5-20251001",
-        "skillsmith_draft":  "claude-sonnet-4-6",
-        "skillsmith_eval":   "claude-sonnet-4-6",
-        "ack_validation":    "claude-haiku-4-5-20251001",
+        "orchestration":      "claude-sonnet-4-6",
+        "task_planning":      "claude-sonnet-4-6",
+        "research":           "claude-opus-4-6",
+        "council_agent":      "claude-opus-4-6",
+        "council_synthesis":  "claude-opus-4-6",
+        "code_generation":    "claude-sonnet-4-6",
+        "compression":        "claude-haiku-4-5-20251001",
+        "classification":     "claude-haiku-4-5-20251001",
+        "file_indexing":      "claude-haiku-4-5-20251001",
+        "mt_judge":           "claude-haiku-4-5-20251001",
+        "skillsmith_draft":   "claude-sonnet-4-6",
+        "skillsmith_eval":    "claude-sonnet-4-6",
+        "ack_validation":     "claude-haiku-4-5-20251001",
+        "context_assessment": "claude-haiku-4-5-20251001",
     })
 
     @classmethod
@@ -356,6 +357,8 @@ class Orchestrator:
         self._monitor_thread: threading.Thread | None = None
         self._running = False
 
+        # Context manager — lazy import to avoid circular deps at module load
+        self._ctx_manager: Any | None = None
         self._start_monitor()
 
     # ------------------------------------------------------------------
@@ -709,6 +712,18 @@ class Orchestrator:
         # Build task packet
         task_packet = self._build_task_packet(message, match, ctx, record)
 
+        # Pre-dispatch context assessment — enrich if gaps found
+        try:
+            task_packet = self._get_ctx_manager().assess(task_packet, self.project)
+            assessment  = task_packet.get("context", {})
+            if not assessment.get("sufficient", True):
+                self._status(
+                    f"Context gaps detected: {assessment.get('gaps', [])} — "
+                    f"enriched with: {assessment.get('enriched_with', [])}"
+                )
+        except Exception as e:
+            logger.warning("Context assessment failed (proceeding): %s", e)
+
         # Write task packet for agent to read
         (worker_dir / "task.json").write_text(json.dumps(task_packet, indent=2))
 
@@ -732,33 +747,41 @@ class Orchestrator:
         except Exception:
             skill = {"name": match.name, "tools_required": []}
 
-        tools_allowed = skill.get("tools_required", [])
-        # Orchestrator always adds llm_call + file_read as baseline
-        for t in ("llm_call", "file_read", "file_write", "embed_text"):
+        tools_allowed = list(skill.get("tools_required", []))
+        # Baseline tools always available to every agent
+        for t in ("llm_call", "file_read", "file_write", "embed_text", "context_fetch"):
             if t not in tools_allowed:
                 tools_allowed.append(t)
+
+        # Preserve MT scores so ContextManager can assess quality
+        mt_retrieved = [
+            {"content": e.get("content", ""), "score": round(e.get("score", 0.0), 3)}
+            if isinstance(e, dict) else {"content": str(e), "score": 0.0}
+            for e in ctx.mt_entries
+        ]
 
         return {
             "task_id":          record.task_id,
             "agent_id":         record.agent_id,
             "objective":        message,
-            "success_criteria": [],   # filled by skill template in phase 5
+            "success_criteria": [],
             "constraints":      [],
             "context": {
-                "lt_summary":    " | ".join(e.get("content", "") for e in ctx.lt_entries[:3]),
-                "mt_retrieved":  [e.get("content", "") for e in ctx.mt_entries],
-                "ct_active":     ctx.ct_active,
-                "st_summary":    ctx.st_summary,
-                "project_index": ctx.project_index,
+                "lt_summary":     " | ".join(e.get("content", "") for e in ctx.lt_entries[:3]),
+                "mt_retrieved":   mt_retrieved,
+                "ct_active":      ctx.ct_active,
+                "st_summary":     ctx.st_summary,
+                "project_index":  ctx.project_index,
                 "relevant_files": ctx.relevant_files,
             },
             "skill":         match.name,
+            "tier":          record.tier,
             "pipeline":      record.pipeline,
             "tools_allowed": tools_allowed,
             "token_budget":  record.token_budget,
             "timeout_secs":  record.timeout_secs,
             "file_budget": {
-                "max_files":   self.config.max_files_per_task,
+                "max_files":     self.config.max_files_per_task,
                 "files_fetched": 0,
             },
         }
@@ -1364,6 +1387,17 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Utility helpers
     # ------------------------------------------------------------------
+
+    def _get_ctx_manager(self) -> Any:
+        """Lazy-load ContextManager (avoids import at module level)."""
+        if self._ctx_manager is None:
+            import sys
+            _pikaia_dir = str(self.base_path)
+            if _pikaia_dir not in sys.path:
+                sys.path.insert(0, _pikaia_dir)
+            from context_manager import ContextManager
+            self._ctx_manager = ContextManager(self.tools, self.base_path, self.config)
+        return self._ctx_manager
 
     def _project_path(self, *parts: str) -> Path:
         return self.base_path / "projects" / self.project / Path(*parts)
