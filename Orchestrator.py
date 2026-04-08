@@ -300,6 +300,7 @@ class AgentRecord:
             "instance_id":  self.instance_id,
             "skill_id":     self.skill_id,
             "pipeline":     self.pipeline,
+            "tier":         self.tier,          # required by AgentRunner / BaseAgent
             "mode":         self.mode,
             "team_id":      self.team_id,
             "spawned_at":   self.spawned_at,
@@ -307,6 +308,7 @@ class AgentRecord:
             "token_budget": self.token_budget,
             "tokens_used":  0,
             "status":       self.status,
+            "worker_dir":   self.worker_dir,    # avoids fallback path recomputation
         }
 
 
@@ -869,8 +871,10 @@ class Orchestrator:
                 }
                 (worker / "state.json").write_text(json.dumps(state, indent=2))
 
-                # Give the agent the ack's planned_steps as a hint
-                enriched_packet = dict(task_packet)
+                # Give the agent the ack's planned_steps as a hint,
+                # but strip orchestrator-internal retry state (_ack_feedback).
+                enriched_packet = {k: v for k, v in task_packet.items()
+                                   if k != "_ack_feedback"}
                 enriched_packet["planned_steps"] = ack.get("planned_steps", [])
                 enriched_packet["restatement"]   = ack.get("restatement", "")
                 (worker / "task.json").write_text(json.dumps(enriched_packet, indent=2))
