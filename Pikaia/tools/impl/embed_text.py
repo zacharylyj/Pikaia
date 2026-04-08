@@ -72,11 +72,13 @@ def run(params: dict, context: dict) -> dict[str, Any]:
                 if om:
                     embed_model = om["model_id"]
 
-            provider_file = base_path / "tools" / "providers" / "ollama.py"
-            spec = importlib.util.spec_from_file_location("ollama", str(provider_file))
-            mod  = importlib.util.module_from_spec(spec)   # type: ignore[arg-type]
-            spec.loader.exec_module(mod)                    # type: ignore[union-attr]
-            adapter = mod.Adapter(api_key=None, model_id=embed_model)
+            import sys as _sys
+            _pikaia = str(base_path)
+            if _pikaia not in _sys.path:
+                _sys.path.insert(0, _pikaia)
+            _mod_name = "tools.providers.ollama"
+            _omod = _sys.modules.get(_mod_name) or importlib.import_module(_mod_name)
+            adapter = _omod.Adapter(api_key=None, model_id=embed_model)
             vec = adapter.embed(text)
             vec = _pad_or_truncate(vec, target_dim)
             return {"embedding": vec, "dim": len(vec), "model": f"ollama/{embed_model}"}
