@@ -104,9 +104,14 @@ def run(params: dict, context: dict) -> dict[str, Any]:
             f"Supported providers: anthropic, openai, ollama"
         )
 
-    spec = importlib.util.spec_from_file_location(provider_name, str(provider_file))
-    mod  = importlib.util.module_from_spec(spec)   # type: ignore[arg-type]
-    spec.loader.exec_module(mod)                    # type: ignore[union-attr]
+    # Use importlib.import_module (not spec_from_file_location) so that relative
+    # imports inside the provider files (e.g. `from .base import BaseAdapter`) work.
+    import sys as _sys
+    _pikaia = str(base_path)
+    if _pikaia not in _sys.path:
+        _sys.path.insert(0, _pikaia)
+    _full_mod = f"tools.providers.{provider_name}"
+    mod = _sys.modules.get(_full_mod) or importlib.import_module(_full_mod)
 
     adapter = mod.Adapter(api_key=api_key, model_id=model_id)
 

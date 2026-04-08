@@ -71,9 +71,12 @@ def _load_adapter(pipeline: str, base_path: Path) -> Any:
     provider_file = base_path / "tools" / "providers" / f"{provider_name}.py"
     if not provider_file.exists():
         raise FileNotFoundError(f"Provider adapter not found: {provider_file}")
-    spec = importlib.util.spec_from_file_location(provider_name, str(provider_file))
-    mod  = importlib.util.module_from_spec(spec)   # type: ignore[arg-type]
-    spec.loader.exec_module(mod)                    # type: ignore[union-attr]
+    import sys as _sys
+    _pikaia = str(base_path)
+    if _pikaia not in _sys.path:
+        _sys.path.insert(0, _pikaia)
+    _full_mod = f"tools.providers.{provider_name}"
+    mod = _sys.modules.get(_full_mod) or importlib.import_module(_full_mod)
     return mod.Adapter(api_key=api_key, model_id=model_id), model_id, provider_name
 
 

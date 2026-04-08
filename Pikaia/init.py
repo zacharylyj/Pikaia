@@ -225,7 +225,7 @@ def scaffold_project(project: str, base: Path = _BASE_PATH) -> None:
         ("ct.json",         []),
         ("file_index.json", {"generated_at": _now_iso(), "dev": {}, "worker": {}}),
         ("dev/index.json",  {}),
-        ("preferences.json", []),
+        ("preferences.json", {}),
         ("config.json",      {}),
     ]:
         fpath = proj / fname
