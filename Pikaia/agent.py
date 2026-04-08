@@ -120,7 +120,8 @@ class BaseAgent:
         self.worker_dir   = Path(record.get("worker_dir") or
                                  self.base_path / "projects" / self.project /
                                  "worker" / self.agent_id)
-        self._tokens_used = 0
+        self._tokens_used  = 0
+        self._tokens_lock  = threading.Lock()   # guards _tokens_used for Tier4 parallel threads
 
         # Build tool registry with agent-scoped permissions
         from tools.registry import ToolRegistry
@@ -315,7 +316,8 @@ class BaseAgent:
                 )
                 current_msgs.append({"role": "user", "content": results_text})
 
-        self._tokens_used += total_tokens
+        with self._tokens_lock:
+            self._tokens_used += total_tokens
         return last_content, total_tokens
 
     # ------------------------------------------------------------------
@@ -466,7 +468,8 @@ class Tier3Agent(BaseAgent):
             )
             raw  = self._adapter.call(request)
             resp = self._adapter.parse_response(raw)
-            self._tokens_used += resp.get("tokens_in", 0) + resp.get("tokens_out", 0)
+            with self._tokens_lock:
+                self._tokens_used += resp.get("tokens_in", 0) + resp.get("tokens_out", 0)
             content = resp.get("content", "").strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
