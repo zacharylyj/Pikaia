@@ -89,7 +89,7 @@ def _ensure_project(project: str) -> None:
         ("ct.json",           []),
         ("file_index.json",   {"generated_at": _now_iso(), "dev": {}, "worker": {}}),
         ("dev/index.json",    {}),
-        ("preferences.json",  []),
+        ("preferences.json",  {}),
         ("config.json",       {}),
     ]:
         fpath = proj / fname
@@ -282,7 +282,27 @@ def _cmd_approve(project: str) -> None:
             flag["status"]    = "done"
             flag["closed_at"] = _now_iso()
             _save_json(ct_path, entries)
-            print(_fmt(f"  ✓ Approved — skill can now be written by SkillSmith.", "green"))
+
+            # Write the approved skill into skills/skills.json so _skill_pick can find it
+            if draft:
+                draft["active"]      = True
+                draft["approved_at"] = _now_iso()
+                skills_path = _BASE_PATH / "skills" / "skills.json"
+                skills_path.parent.mkdir(parents=True, exist_ok=True)
+                existing = _load_json(skills_path) or []
+                if not isinstance(existing, list):
+                    existing = [existing]
+                # Replace if same skill_id already present, otherwise append
+                idx = next((i for i, s in enumerate(existing)
+                            if s.get("skill_id") == draft.get("skill_id")), None)
+                if idx is not None:
+                    existing[idx] = draft
+                else:
+                    existing.append(draft)
+                _save_json(skills_path, existing)
+                print(_fmt(f"  ✓ Skill '{draft.get('name','?')}' is now active.", "green"))
+            else:
+                print(_fmt(f"  ✓ CT flag approved (no draft found to activate).", "green"))
         else:
             flag["status"]    = "failed"
             flag["closed_at"] = _now_iso()

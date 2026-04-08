@@ -785,6 +785,7 @@ class Orchestrator:
                 "relevant_files": ctx.relevant_files,
             },
             "skill":         match.name,
+            "skill_id":      match.skill_id,
             "tier":          record.tier,
             "pipeline":      record.pipeline,
             "tools_allowed": tools_allowed,
@@ -1259,7 +1260,7 @@ class Orchestrator:
             "content":     content,
             "ts":          _now_iso(),
         })
-        history_path.write_text(json.dumps(entries, indent=2))
+        _atomic_write_json(history_path, entries)
 
     def _mt_judge(self, user_msg: str, assistant_msg: str) -> None:
         """Ask mt_judge pipeline if this exchange is worth persisting to MT."""

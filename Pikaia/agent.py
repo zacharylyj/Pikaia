@@ -323,7 +323,10 @@ class BaseAgent:
     # ------------------------------------------------------------------
 
     def _load_skill_template(self) -> str:
-        skill_id = self.task_packet.get("skill", "")
+        # "skill_id" is the canonical key; fall back to "skill" (name) for older packets
+        skill_id = self.task_packet.get("skill_id") or self.task_packet.get("skill", "")
+        if not skill_id:
+            return ""
         try:
             result = self._registry.dispatch("skill_read", {"skill_id": skill_id})
             return result.get("template", "") or ""
@@ -368,7 +371,8 @@ class Tier12Agent(BaseAgent):
             ctx_lines.append(f"Session summary: {ctx['st_summary']}")
         if ctx.get("mt_retrieved"):
             ctx_lines.append("Relevant knowledge:\n" + "\n".join(
-                f"- {c}" for c in ctx["mt_retrieved"]
+                f"- {c.get('content', str(c)) if isinstance(c, dict) else c}"
+                for c in ctx["mt_retrieved"]
             ))
         if ctx_lines:
             system += "\n\n## Context\n" + "\n".join(ctx_lines)

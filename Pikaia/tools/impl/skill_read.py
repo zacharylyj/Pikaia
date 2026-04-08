@@ -41,17 +41,28 @@ def run(params: dict, context: dict) -> dict[str, Any]:
             raise ValueError(f"Skill '{skill_id}' not found in skills.json")
         skill = sorted(candidates, key=lambda s: s.get("version", 0), reverse=True)[0]
 
-    # Load template
-    template_rel  = skill.get("template", "")
+    # Load template — may be an inline string or a relative file path.
+    # Heuristic: if it contains spaces or newlines, or has no file-like extension,
+    # treat it as an inline template.  Otherwise try to load it as a file.
+    template_val  = skill.get("template", "")
     template_text = ""
-    if template_rel:
-        template_path = base_path / "skills" / template_rel
-        if not template_path.exists():
-            # Try relative to base_path directly
-            template_path = base_path / template_rel
-        if template_path.exists():
-            template_text = template_path.read_text(encoding="utf-8")
+    if template_val:
+        _is_inline = (
+            " " in template_val          # inline text always has spaces
+            or "\n" in template_val      # multi-line inline
+            or "{{" in template_val      # Jinja-style placeholder → inline
+            or not Path(template_val).suffix  # no file extension
+        )
+        if _is_inline:
+            template_text = template_val
         else:
-            template_text = f"[Template file not found: {template_rel}]"
+            template_path = base_path / "skills" / template_val
+            if not template_path.exists():
+                template_path = base_path / template_val
+            if template_path.exists():
+                template_text = template_path.read_text(encoding="utf-8")
+            else:
+                # Fall back to treating the value as inline text
+                template_text = template_val
 
     return {"skill": skill, "template": template_text}
