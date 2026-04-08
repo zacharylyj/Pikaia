@@ -28,6 +28,7 @@
     "mt_judge":             "claude-haiku-4-5-20251001",
     "skillsmith_draft":     "claude-sonnet-4-6",
     "skillsmith_eval":      "claude-sonnet-4-6",
-    "ack_validation":       "claude-haiku-4-5-20251001"
+    "ack_validation":       "claude-haiku-4-5-20251001",
+    "context_assessment":   "claude-haiku-4-5-20251001"
 }
 }
