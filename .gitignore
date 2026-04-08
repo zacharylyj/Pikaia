@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.claude/
+*.egg-info/
+.env
+Pikaia/projects/
+Pikaia/memory/

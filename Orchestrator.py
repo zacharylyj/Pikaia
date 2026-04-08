@@ -94,7 +94,11 @@ class Tools:
         ))
 
     def embed_text(self, text: str) -> list[float]:
-        return self._dispatch("embed_text", {"text": text})
+        result = self._dispatch("embed_text", {"text": text})
+        # embed_text.run() returns {"embedding": [...], "dim": int, "model": str}
+        if isinstance(result, dict):
+            return result.get("embedding", [])
+        return result  # already a list (unlikely but safe)
 
     def memory_read(
         self,
@@ -115,7 +119,11 @@ class Tools:
         ))
 
     def file_read(self, path: str) -> str:
-        return self._dispatch("file_read", {"path": path})
+        result = self._dispatch("file_read", {"path": path})
+        # file_read.run() returns {"content": str, "path": str, "size_bytes": int}
+        if isinstance(result, dict):
+            return result.get("content", "")
+        return result  # already a string
 
     def file_write(self, path: str, content: str) -> None:
         self._dispatch("file_write", {"path": path, "content": content})
@@ -292,6 +300,7 @@ class AgentRecord:
             "instance_id":  self.instance_id,
             "skill_id":     self.skill_id,
             "pipeline":     self.pipeline,
+            "tier":         self.tier,          # required by AgentRunner / BaseAgent
             "mode":         self.mode,
             "team_id":      self.team_id,
             "spawned_at":   self.spawned_at,
@@ -299,6 +308,7 @@ class AgentRecord:
             "token_budget": self.token_budget,
             "tokens_used":  0,
             "status":       self.status,
+            "worker_dir":   self.worker_dir,    # avoids fallback path recomputation
         }
 
 
@@ -806,8 +816,71 @@ class Orchestrator:
         base_path   = str(self.base_path)
 
         def _run() -> None:
+            worker = Path(record.worker_dir)
             try:
-                AgentRunner.run(task_packet, record_dict, base_path)
+                # ----------------------------------------------------------
+                # Stage 2 — ack handshake with retry (up to ack_max_rounds)
+                # ----------------------------------------------------------
+                ack    = {}
+                ok     = False
+                reason = "not started"
+                attempt_packet = task_packet
+
+                for attempt in range(self.config.ack_max_rounds + 1):
+                    ack = self._generate_ack(record, attempt_packet)
+                    (worker / "ack.json").write_text(json.dumps(ack, indent=2))
+                    ok, reason = self._validate_ack(ack, attempt_packet, record)
+                    if ok:
+                        break
+                    self._status(
+                        f"Ack round {attempt + 1}/{self.config.ack_max_rounds + 1} "
+                        f"invalid ({reason}) — retrying"
+                    )
+                    # Inject feedback into next attempt so the LLM can resolve it
+                    feedback = attempt_packet.get("_ack_feedback", [])
+                    attempt_packet = dict(task_packet)
+                    attempt_packet["_ack_feedback"] = feedback + [reason]
+
+                if not ok:
+                    logger.warning(
+                        "Ack failed after %d rounds for %s: %s",
+                        self.config.ack_max_rounds + 1, record.agent_id, reason
+                    )
+                    self._mark_agent_done(record, status="failed",
+                                          output=f"Ack failed: {reason}")
+                    return
+
+                self._status(
+                    f"Ack received (confidence: {ack.get('confidence', '?')}, "
+                    f"steps: {len(ack.get('planned_steps', []))}) — launching agent"
+                )
+
+                # ----------------------------------------------------------
+                # Stage 3 — write initial state then hand off to AgentRunner
+                # ----------------------------------------------------------
+                state = {
+                    "task_id":      record.task_id,
+                    "status":       "running",
+                    "step_current": 0,
+                    "step_total":   len(ack.get("planned_steps", [])),
+                    "steps_done":   [],
+                    "step_next":    (ack["planned_steps"][0]
+                                     if ack.get("planned_steps") else ""),
+                    "tokens_used":  0,
+                    "issues":       [],
+                }
+                (worker / "state.json").write_text(json.dumps(state, indent=2))
+
+                # Give the agent the ack's planned_steps as a hint,
+                # but strip orchestrator-internal retry state (_ack_feedback).
+                enriched_packet = {k: v for k, v in task_packet.items()
+                                   if k != "_ack_feedback"}
+                enriched_packet["planned_steps"] = ack.get("planned_steps", [])
+                enriched_packet["restatement"]   = ack.get("restatement", "")
+                (worker / "task.json").write_text(json.dumps(enriched_packet, indent=2))
+
+                AgentRunner.run(enriched_packet, record_dict, base_path)
+
             except Exception as exc:
                 logger.exception("Agent %s crashed in runner: %s", record.agent_id, exc)
                 self._mark_agent_done(record, status="failed", output=str(exc))
@@ -821,8 +894,16 @@ class Orchestrator:
             "You are an agent receiving a task. "
             "Respond ONLY with a JSON ack matching this schema exactly:\n"
             '{"task_id":"...","restatement":"one sentence","done_looks_like":["..."],'
-            '"ambiguities":[],"planned_steps":["tool: action"],"confidence":0.0}'
+            '"ambiguities":[],"planned_steps":["tool: action"],"confidence":0.0}\n'
+            "Confidence must be >= 0.80. Resolve any ambiguities before listing them."
         )
+        # Inject retry feedback if present
+        feedback = task_packet.get("_ack_feedback", [])
+        if feedback:
+            system += (
+                f"\n\nPrevious attempt was rejected. Issues to fix: "
+                + "; ".join(feedback)
+            )
         try:
             resp = self.tools.llm_call(
                 pipeline="ack_validation",

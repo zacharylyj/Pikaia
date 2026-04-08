@@ -106,13 +106,17 @@ class ContextManager:
                 if added:
                     enriched_with.append(f"[{q[:60]}] → {added} items")
 
-        # If no explicit gaps but MT is sparse for a complex tier, try a direct re-fetch
+        # If no explicit gaps but MT is sparse for a complex tier, try a direct re-fetch.
+        # Do NOT override sufficient=True here — if the LLM identified genuine gaps
+        # that we couldn't fill, the agent should still know context is thin.
         tier = task_packet.get("tier", 2)
         if tier >= 3 and len(mt_scored) < 2:
             added = self._enrich_for_query(objective, project, ctx)
             if added:
-                sufficient = True
                 enriched_with.append(f"direct re-fetch → {added} items")
+                # Only mark sufficient if we actually recovered meaningful context
+                if not gaps and added >= 2:
+                    sufficient = True
 
         ctx["pre_enriched"]  = True
         ctx["sufficient"]    = sufficient

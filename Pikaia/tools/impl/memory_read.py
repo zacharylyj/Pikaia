@@ -41,6 +41,13 @@ def run(params: dict, context: dict) -> Any:
     if layer == "lt":
         return _read_lt(base_path)
     if layer == "mt":
+        # Palace-aware routing: honour wing / room / palace_layer if provided
+        wing          = params.get("wing")
+        room          = params.get("room")
+        palace_layer  = params.get("palace_layer")   # int 0-3
+        if wing or room or palace_layer is not None:
+            return _read_mt_palace(base_path, query, top_k, context,
+                                   wing, room, palace_layer)
         return _read_mt(base_path, query, top_k, context)
     if layer == "ct":
         return _read_ct(base_path, project)
@@ -48,6 +55,8 @@ def run(params: dict, context: dict) -> Any:
         return _read_st(base_path, project, instance_id)
     if layer == "history":
         return _read_history(base_path, project, instance_id, query, top_k, context)
+    if layer == "kg":
+        return _read_kg(params, base_path)
 
     raise ValueError(f"Unknown memory layer: '{layer}'")
 
@@ -133,6 +142,53 @@ def _read_history(
             scored.append((e, _cosine(query_vec, vec)))
     scored.sort(key=lambda x: x[1], reverse=True)
     return [e for e, _ in scored[:top_k]]
+
+
+# ------------------------------------------------------------------
+# Palace-aware MT reader (delegates to mt_palace.MTReader)
+# ------------------------------------------------------------------
+
+def _read_mt_palace(
+    base_path:    Path,
+    query:        str,
+    top_k:        int,
+    context:      dict,
+    wing:         str | None,
+    room:         str | None,
+    palace_layer: int | None,
+) -> list[dict]:
+    try:
+        import sys as _sys
+        _pikaia = str(base_path)
+        if _pikaia not in _sys.path:
+            _sys.path.insert(0, _pikaia)
+        from mt_palace import MTReader   # type: ignore[import]
+        return MTReader.read(
+            base_path    = base_path,
+            query        = query,
+            top_k        = top_k,
+            context      = context,
+            wing         = wing,
+            room         = room,
+            palace_layer = palace_layer,
+        )
+    except Exception as exc:
+        # Graceful fallback to standard MT search
+        import logging
+        logging.getLogger(__name__).warning("MTReader failed (%s) — falling back", exc)
+        return _read_mt(base_path, query, top_k, context)
+
+
+def _read_kg(params: dict, base_path: Path) -> list[dict]:
+    try:
+        import sys as _sys
+        _pikaia = str(base_path)
+        if _pikaia not in _sys.path:
+            _sys.path.insert(0, _pikaia)
+        from mt_palace import kg_read   # type: ignore[import]
+        return kg_read(params, base_path)
+    except Exception:
+        return []
 
 
 # ------------------------------------------------------------------

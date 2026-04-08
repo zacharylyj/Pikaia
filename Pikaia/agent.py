@@ -529,6 +529,11 @@ class Tier4Council(BaseAgent):
             with lock:
                 specialist_outputs[name] = content
 
+        # Each specialist gets most of the task's timeout budget;
+        # leave ~60 s for synthesis afterward.
+        task_timeout      = self.task_packet.get("timeout_secs", 600)
+        specialist_timeout = max(60, task_timeout - 60)
+
         threads = []
         for name, persona in _COUNCIL_SPECIALISTS:
             t = threading.Thread(
@@ -538,7 +543,7 @@ class Tier4Council(BaseAgent):
             t.start()
 
         for t in threads:
-            t.join(timeout=300)
+            t.join(timeout=specialist_timeout)
 
         self._write_state(
             step=n_specialists, total=n_specialists + 1,

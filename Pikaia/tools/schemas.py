@@ -140,16 +140,54 @@ SCHEMAS: dict[str, dict] = {
 
     "memory_read": {
         "name": "memory_read",
-        "description": "Read from a memory layer. Returns list of entries (or ST dict for layer=st).",
+        "description": (
+            "Read from a memory layer. "
+            "layer=mt supports MemPalace retrieval: use wing/room to filter by domain/subtopic, "
+            "palace_layer (0-3) for depth (1=essential story, 2=filtered, 3=full semantic). "
+            "layer=kg queries the knowledge graph temporal triple store. "
+            "Returns list of entries (or ST dict for layer=st)."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "layer":       {"type": "string", "enum": ["lt", "mt", "ct", "st", "history"],
-                                "description": "Memory layer to read"},
+                "layer": {
+                    "type": "string",
+                    "enum": ["lt", "mt", "ct", "st", "history", "kg"],
+                    "description": "Memory layer to read",
+                },
                 "query":       {"type": "string",  "description": "Semantic search query (MT/History)"},
                 "top_k":       {"type": "integer", "description": "Max results (default: 5)"},
                 "project":     {"type": "string",  "description": "Project name (default: current)"},
                 "instance_id": {"type": "string",  "description": "Instance ID (default: current)"},
+                # Palace-specific (layer=mt)
+                "wing": {
+                    "type": "string",
+                    "description": "Filter MT by wing domain (technical/decisions/knowledge/issues)",
+                },
+                "room": {
+                    "type": "string",
+                    "description": (
+                        "Filter MT by room subtopic "
+                        "(auth/api/code/data/deploy/testing/planning/decisions/"
+                        "research/issues/architecture/performance/security)"
+                    ),
+                },
+                "palace_layer": {
+                    "type": "integer",
+                    "enum": [1, 2, 3],
+                    "description": (
+                        "MemPalace retrieval depth: "
+                        "1=essential story (top by importance, grouped by room), "
+                        "2=wing/room filtered cosine search, "
+                        "3=full semantic search (default when no wing/room given)"
+                    ),
+                },
+                # KG-specific (layer=kg)
+                "subject":          {"type": "string", "description": "KG triple subject filter"},
+                "predicate":        {"type": "string", "description": "KG triple predicate filter"},
+                "object":           {"type": "string", "description": "KG triple object filter"},
+                "as_of":            {"type": "string", "description": "ISO date for temporal KG query"},
+                "subject_timeline": {"type": "string", "description": "Return full timeline for this subject"},
             },
             "required": ["layer"],
         },

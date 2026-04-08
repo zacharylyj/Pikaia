@@ -50,6 +50,14 @@ def run(params: dict, context: dict) -> dict[str, Any]:
         _write_ct(base_path, project, entry)
     elif layer == "st":
         _write_st(base_path, project, instance_id, entry)
+    elif layer == "kg":
+        import sys as _sys
+        _pikaia = str(base_path)
+        if _pikaia not in _sys.path:
+            _sys.path.insert(0, _pikaia)
+        from mt_palace import kg_write  # type: ignore[import]
+        kg_result = kg_write(entry, base_path)
+        return {"written": True, "layer": "kg", **kg_result}
     else:
         raise ValueError(f"Unknown memory layer: '{layer}'")
 
@@ -77,6 +85,18 @@ def _write_mt(base_path: Path, entry: dict, context: dict) -> None:
         embedding = _get_embedding(entry["content"], context)
         if embedding:
             entry["embedding"] = embedding
+
+    # Palace enrichment: wing/room/entities/importance/AAAK
+    try:
+        import importlib.util as _ilu
+        import sys as _sys
+        _pikaia = str(base_path)
+        if _pikaia not in _sys.path:
+            _sys.path.insert(0, _pikaia)
+        from mt_palace import MTWriter   # type: ignore[import]
+        entry = MTWriter.enrich(entry, base_path, context)
+    except Exception:
+        pass  # graceful fallback — entry still gets saved without palace fields
 
     entries = _load_list(path)
 
