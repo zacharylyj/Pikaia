@@ -120,7 +120,8 @@ class BaseAgent:
         self.worker_dir   = Path(record.get("worker_dir") or
                                  self.base_path / "projects" / self.project /
                                  "worker" / self.agent_id)
-        self._tokens_used = 0
+        self._tokens_used  = 0
+        self._tokens_lock  = threading.Lock()   # guards _tokens_used for Tier4 parallel threads
 
         # Build tool registry with agent-scoped permissions
         from tools.registry import ToolRegistry
@@ -315,7 +316,8 @@ class BaseAgent:
                 )
                 current_msgs.append({"role": "user", "content": results_text})
 
-        self._tokens_used += total_tokens
+        with self._tokens_lock:
+            self._tokens_used += total_tokens
         return last_content, total_tokens
 
     # ------------------------------------------------------------------
@@ -323,7 +325,10 @@ class BaseAgent:
     # ------------------------------------------------------------------
 
     def _load_skill_template(self) -> str:
-        skill_id = self.task_packet.get("skill", "")
+        # "skill_id" is the canonical key; fall back to "skill" (name) for older packets
+        skill_id = self.task_packet.get("skill_id") or self.task_packet.get("skill", "")
+        if not skill_id:
+            return ""
         try:
             result = self._registry.dispatch("skill_read", {"skill_id": skill_id})
             return result.get("template", "") or ""
@@ -368,7 +373,8 @@ class Tier12Agent(BaseAgent):
             ctx_lines.append(f"Session summary: {ctx['st_summary']}")
         if ctx.get("mt_retrieved"):
             ctx_lines.append("Relevant knowledge:\n" + "\n".join(
-                f"- {c}" for c in ctx["mt_retrieved"]
+                f"- {c.get('content', str(c)) if isinstance(c, dict) else c}"
+                for c in ctx["mt_retrieved"]
             ))
         if ctx_lines:
             system += "\n\n## Context\n" + "\n".join(ctx_lines)
@@ -462,7 +468,8 @@ class Tier3Agent(BaseAgent):
             )
             raw  = self._adapter.call(request)
             resp = self._adapter.parse_response(raw)
-            self._tokens_used += resp.get("tokens_in", 0) + resp.get("tokens_out", 0)
+            with self._tokens_lock:
+                self._tokens_used += resp.get("tokens_in", 0) + resp.get("tokens_out", 0)
             content = resp.get("content", "").strip()
             if content.startswith("```"):
                 content = content.split("```")[1]

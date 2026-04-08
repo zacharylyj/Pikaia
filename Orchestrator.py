@@ -444,9 +444,17 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Preferences overlay failed: %s", e)
 
-        # MT — RAG on (ST summary + message)
+        # ST — load once; used for both MT query and ST context
+        st: dict = {}
         try:
             st = self._load_st()
+            ctx.st_summary = st.get("summary", "")
+            ctx.st_window  = st.get("window", [])
+        except Exception as e:
+            logger.warning("ST read failed: %s", e)
+
+        # MT — RAG on (ST summary + message)
+        try:
             mt_query = f"{st.get('summary', '')} {message}"
             ctx.mt_entries = self.tools.memory_read(
                 "mt", query=mt_query, top_k=self.config.mt_top_k, project=self.project
@@ -460,14 +468,6 @@ class Orchestrator:
             ctx.ct_active = [f for f in all_ct if f.get("status") == "open"]
         except Exception as e:
             logger.warning("CT read failed: %s", e)
-
-        # ST — summary + last N verbatim
-        try:
-            st = self._load_st()
-            ctx.st_summary = st.get("summary", "")
-            ctx.st_window  = st.get("window", [])
-        except Exception as e:
-            logger.warning("ST read failed: %s", e)
 
         # File layer 1 — always injected
         try:
@@ -516,7 +516,7 @@ class Orchestrator:
                 max_tokens=256,
                 temperature=0.0,
             )
-            data = json.loads(resp["content"])
+            data = json.loads(_strip_json_fences(resp["content"]))
             intent_type: IntentType = data.get("type", "task")
             if intent_type == "ambiguous":
                 return data.get("clarification", "Could you clarify?"), "ambiguous"
@@ -611,7 +611,7 @@ class Orchestrator:
 
             if skills_dirty:
                 try:
-                    skills_path.write_text(json.dumps(skills, indent=2))
+                    _atomic_write_json(skills_path, skills)
                 except Exception as e:
                     logger.warning("Could not save updated skill embeddings: %s", e)
 
@@ -785,6 +785,7 @@ class Orchestrator:
                 "relevant_files": ctx.relevant_files,
             },
             "skill":         match.name,
+            "skill_id":      match.skill_id,
             "tier":          record.tier,
             "pipeline":      record.pipeline,
             "tools_allowed": tools_allowed,
@@ -1017,7 +1018,7 @@ class Orchestrator:
             state = json.loads(state_path.read_text()) if state_path.exists() else {}
             state["status"] = "killed"
             state["kill_reason"] = reason
-            state_path.write_text(json.dumps(state, indent=2))
+            _atomic_write_json(state_path, state)
         except Exception:
             pass
         self._close_ct_flag(record.task_id, status="failed")
@@ -1259,7 +1260,7 @@ class Orchestrator:
             "content":     content,
             "ts":          _now_iso(),
         })
-        history_path.write_text(json.dumps(entries, indent=2))
+        _atomic_write_json(history_path, entries)
 
     def _mt_judge(self, user_msg: str, assistant_msg: str) -> None:
         """Ask mt_judge pipeline if this exchange is worth persisting to MT."""
@@ -1274,7 +1275,7 @@ class Orchestrator:
                 max_tokens=128,
                 temperature=0.0,
             )
-            data = json.loads(resp["content"])
+            data = json.loads(_strip_json_fences(resp["content"]))
             if data.get("persist") and data.get("content"):
                 embedding = self.tools.embed_text(data["content"])
                 entry = {
@@ -1495,8 +1496,7 @@ class Orchestrator:
 
     def _save_st(self, st: dict) -> None:
         st_path = self._project_path("instances", self.instance_id, "st.json")
-        st_path.parent.mkdir(parents=True, exist_ok=True)
-        st_path.write_text(json.dumps(st, indent=2))
+        _atomic_write_json(st_path, st)
 
     def _cosine_top_k(
         self,
@@ -1543,6 +1543,20 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+def _strip_json_fences(text: str) -> str:
+    """Remove markdown code fences from LLM JSON responses."""
+    text = text.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        # parts[0] is before the opening fence (empty), parts[1] is the fenced block
+        if len(parts) >= 2:
+            text = parts[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+    return text
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
