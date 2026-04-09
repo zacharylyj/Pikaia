@@ -119,11 +119,17 @@ def _create_or_resume(project: str, instance_id: str | None) -> str:
     return new_id
 
 
-def _make_orchestrator(project: str, instance_id: str) -> tuple[Orchestrator, ToolRegistry]:
+def _make_orchestrator(project: str, instance_id: str,
+                        debug: bool = False) -> tuple[Orchestrator, ToolRegistry]:
     cfg = OrchestratorConfig.from_json(
         str(_BASE_PATH / "config.json"),
         str(_project_path(project, "config.json")),
     )
+    if debug:
+        # Route every pipeline through the no-op debug adapter
+        for key in cfg.pipelines:
+            cfg.pipelines[key] = "debug-model"
+
     registry = ToolRegistry(
         base_path   = str(_BASE_PATH),
         project     = project,
@@ -379,6 +385,10 @@ Commands:
 
 Session = tuple[str, str, Orchestrator, ToolRegistry]
 
+# Set by main() before the REPL starts; read by _dispatch_command when
+# spawning a new orchestrator on /project or /new project.
+_DEBUG_MODE: bool = False
+
 
 def _dispatch_command(line: str, project: str, instance_id: str,
                       orch: Orchestrator, reg: ToolRegistry) -> tuple[Session, bool]:
@@ -417,7 +427,7 @@ def _dispatch_command(line: str, project: str, instance_id: str,
             new_proj = args[0]
             _ensure_project(new_proj)
             new_inst = _create_or_resume(new_proj, None)
-            new_orch, new_reg = _make_orchestrator(new_proj, new_inst)
+            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE)
             print(f"Switched to project '{new_proj}'  instance: {new_inst}")
             return (new_proj, new_inst, new_orch, new_reg), False
     elif cmd == "/new":
@@ -425,7 +435,7 @@ def _dispatch_command(line: str, project: str, instance_id: str,
             new_proj = args[1]
             _ensure_project(new_proj)
             new_inst = _create_or_resume(new_proj, None)
-            new_orch, new_reg = _make_orchestrator(new_proj, new_inst)
+            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE)
             print(f"Created project '{new_proj}'  instance: {new_inst}")
             return (new_proj, new_inst, new_orch, new_reg), False
         else:
@@ -448,14 +458,19 @@ _BANNER = """
 
 
 def main() -> None:
+    global _DEBUG_MODE
+
     parser = argparse.ArgumentParser(description="AGENT — AI agent orchestration framework")
     parser.add_argument("--project",  default="default", metavar="NAME",
                         help="Project to load (default: default)")
     parser.add_argument("--instance", default=None,      metavar="ID",
                         help="Resume an existing instance by ID")
+    parser.add_argument("--debug",    action="store_true",
+                        help="Debug mode: use mock LLM adapter (no API keys needed)")
     args = parser.parse_args()
 
-    project = args.project
+    project      = args.project
+    _DEBUG_MODE  = args.debug
 
     # First-run: auto-scaffold if projects/ doesn't exist
     if not (_BASE_PATH / "projects").exists():
@@ -467,12 +482,14 @@ def main() -> None:
 
     _ensure_project(project)
     instance_id = _create_or_resume(project, args.instance)
-    orch, reg   = _make_orchestrator(project, instance_id)
+    orch, reg   = _make_orchestrator(project, instance_id, debug=_DEBUG_MODE)
 
     print(_BANNER)
     print(f"  Project  : {_fmt(project, 'cyan')}")
     print(f"  Instance : {_fmt(instance_id, 'grey')}")
     print(f"  Base     : {_fmt(str(_BASE_PATH), 'grey')}")
+    if _DEBUG_MODE:
+        print(f"  Mode     : {_fmt('DEBUG  (no API keys used — mock LLM responses)', 'yellow')}")
     print(f"\n  Type {_fmt('/help', 'bold')} for commands or {_fmt('/exit', 'bold')} to quit.\n")
 
     # Enable readline on platforms that support it

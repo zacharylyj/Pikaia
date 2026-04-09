@@ -64,5 +64,16 @@
     "cost_tier":      "free",
     "speed_tier":     "variable",
     "enabled":        true
+  },
+  {
+    "model_id":       "debug-model",
+    "provider":       "debug",
+    "call_format":    "messages",
+    "strengths":      ["no API key required", "instant responses", "offline testing"],
+    "weaknesses":     ["canned responses only — not real intelligence"],
+    "context_window": 200000,
+    "cost_tier":      "free",
+    "speed_tier":     "instant",
+    "enabled":        true
   }
 ]
