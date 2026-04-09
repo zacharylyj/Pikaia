@@ -117,16 +117,48 @@ def _create_or_resume(project: str, instance_id: str | None) -> str:
     return new_id
 
 
+# Pipeline assignments for each free-provider mode.
+# fast_pipelines → lightweight model; capable_pipelines → stronger model.
+_GROQ_PIPELINES: dict[str, str] = {
+    # Fast / cheap tasks → 8B instant
+    "classification":     "llama-3.1-8b-instant",
+    "mt_judge":           "llama-3.1-8b-instant",
+    "compression":        "llama-3.1-8b-instant",
+    "ack_validation":     "llama-3.1-8b-instant",
+    "context_assessment": "llama-3.1-8b-instant",
+    "file_indexing":      "llama-3.1-8b-instant",
+    # Capable tasks → 70B versatile
+    "orchestration":      "llama-3.3-70b-versatile",
+    "task_planning":      "llama-3.3-70b-versatile",
+    "code_generation":    "llama-3.3-70b-versatile",
+    "research":           "llama-3.3-70b-versatile",
+    "council_agent":      "llama-3.3-70b-versatile",
+    "council_synthesis":  "llama-3.3-70b-versatile",
+    "skillsmith_draft":   "llama-3.3-70b-versatile",
+    "skillsmith_eval":    "llama-3.1-8b-instant",
+}
+
+_OLLAMA_PIPELINES: dict[str, str] = {
+    k: "llama3.2" for k in _GROQ_PIPELINES
+}
+
+
+def _patch_pipelines(cfg: OrchestratorConfig, registry: ToolRegistry,
+                     overrides: dict[str, str]) -> None:
+    """Apply pipeline overrides to both OrchestratorConfig and ToolRegistry context."""
+    cfg.pipelines.update(overrides)
+    reg_cfg = registry.context.setdefault("config", {})
+    reg_cfg.setdefault("pipelines", {}).update(overrides)
+
+
 def _make_orchestrator(project: str, instance_id: str,
-                        debug: bool = False) -> tuple[Orchestrator, ToolRegistry]:
+                        debug: bool = False,
+                        groq:  bool = False,
+                        ollama: bool = False) -> tuple[Orchestrator, ToolRegistry]:
     cfg = OrchestratorConfig.from_json(
         str(_BASE_PATH / "config.json"),
         str(_project_path(project, "config.json")),
     )
-    if debug:
-        # Route every pipeline through the no-op debug adapter
-        for key in cfg.pipelines:
-            cfg.pipelines[key] = "debug-model"
 
     registry = ToolRegistry(
         base_path   = str(_BASE_PATH),
@@ -136,10 +168,12 @@ def _make_orchestrator(project: str, instance_id: str,
     )
 
     if debug:
-        # ToolRegistry loads config fresh from disk; patch its copy too so
-        # llm_call.py (which reads context["config"]["pipelines"]) uses debug-model
-        reg_cfg = registry.context.setdefault("config", {})
-        reg_cfg.setdefault("pipelines", {}).update(cfg.pipelines)
+        _patch_pipelines(cfg, registry, {k: "debug-model" for k in cfg.pipelines})
+    elif groq:
+        _patch_pipelines(cfg, registry, _GROQ_PIPELINES)
+    elif ollama:
+        _patch_pipelines(cfg, registry, _OLLAMA_PIPELINES)
+
     tools = Tools(dispatch=registry.dispatch)
     orch  = Orchestrator(
         project     = project,
@@ -391,7 +425,9 @@ Session = tuple[str, str, Orchestrator, ToolRegistry]
 
 # Set by main() before the REPL starts; read by _dispatch_command when
 # spawning a new orchestrator on /project or /new project.
-_DEBUG_MODE: bool = False
+_DEBUG_MODE:  bool = False
+_GROQ_MODE:   bool = False
+_OLLAMA_MODE: bool = False
 
 
 def _dispatch_command(line: str, project: str, instance_id: str,
@@ -431,7 +467,7 @@ def _dispatch_command(line: str, project: str, instance_id: str,
             new_proj = args[0]
             _ensure_project(new_proj)
             new_inst = _create_or_resume(new_proj, None)
-            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE)
+            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE)
             print(f"Switched to project '{new_proj}'  instance: {new_inst}")
             return (new_proj, new_inst, new_orch, new_reg), False
     elif cmd == "/new":
@@ -439,7 +475,7 @@ def _dispatch_command(line: str, project: str, instance_id: str,
             new_proj = args[1]
             _ensure_project(new_proj)
             new_inst = _create_or_resume(new_proj, None)
-            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE)
+            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE)
             print(f"Created project '{new_proj}'  instance: {new_inst}")
             return (new_proj, new_inst, new_orch, new_reg), False
         else:
@@ -462,7 +498,7 @@ _BANNER = """
 
 
 def main() -> None:
-    global _DEBUG_MODE
+    global _DEBUG_MODE, _GROQ_MODE, _OLLAMA_MODE
 
     parser = argparse.ArgumentParser(description="AGENT — AI agent orchestration framework")
     parser.add_argument("--project",  default="default", metavar="NAME",
@@ -470,11 +506,17 @@ def main() -> None:
     parser.add_argument("--instance", default=None,      metavar="ID",
                         help="Resume an existing instance by ID")
     parser.add_argument("--debug",    action="store_true",
-                        help="Debug mode: use mock LLM adapter (no API keys needed)")
+                        help="Mock LLM adapter — no API keys, canned responses")
+    parser.add_argument("--groq",     action="store_true",
+                        help="Use Groq free-tier API (needs 'groq' key in keys.json)")
+    parser.add_argument("--ollama",   action="store_true",
+                        help="Use local Ollama (needs Ollama running on localhost:11434)")
     args = parser.parse_args()
 
     project      = args.project
     _DEBUG_MODE  = args.debug
+    _GROQ_MODE   = args.groq   and not args.debug
+    _OLLAMA_MODE = args.ollama and not args.debug and not args.groq
 
     # First-run: auto-scaffold if projects/ doesn't exist
     if not (_BASE_PATH / "projects").exists():
@@ -486,14 +528,19 @@ def main() -> None:
 
     _ensure_project(project)
     instance_id = _create_or_resume(project, args.instance)
-    orch, reg   = _make_orchestrator(project, instance_id, debug=_DEBUG_MODE)
+    orch, reg   = _make_orchestrator(project, instance_id,
+                                     debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE)
 
     print(_BANNER)
     print(f"  Project  : {_fmt(project, 'cyan')}")
     print(f"  Instance : {_fmt(instance_id, 'grey')}")
     print(f"  Base     : {_fmt(str(_BASE_PATH), 'grey')}")
     if _DEBUG_MODE:
-        print(f"  Mode     : {_fmt('DEBUG  (no API keys used — mock LLM responses)', 'yellow')}")
+        print(f"  Mode     : {_fmt('DEBUG  (mock LLM — no API keys, canned responses)', 'yellow')}")
+    elif _GROQ_MODE:
+        print(f"  Mode     : {_fmt('GROQ   (free tier — llama-3.1-8b / llama-3.3-70b)', 'green')}")
+    elif _OLLAMA_MODE:
+        print(f"  Mode     : {_fmt('OLLAMA (local — llama3.2 on localhost:11434)', 'green')}")
     print(f"\n  Type {_fmt('/help', 'bold')} for commands or {_fmt('/exit', 'bold')} to quit.\n")
 
     # Enable readline on platforms that support it
