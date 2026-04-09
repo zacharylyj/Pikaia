@@ -286,12 +286,7 @@ class ContextManager:
             max_tokens  = 256,
             temperature = 0.0,
         )
-        raw = resp.get("content", "").strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        data    = json.loads(raw)
+        data    = json.loads(_strip_json_fences(resp.get("content", "")))
         gaps    = data.get("gaps", [])
         queries = data.get("queries", [])
         return gaps, queries
@@ -345,6 +340,19 @@ class ContextManager:
 # ---------------------------------------------------------------------------
 # Shared low-level helpers (no I/O side effects)
 # ---------------------------------------------------------------------------
+
+def _strip_json_fences(text: str) -> str:
+    """Remove markdown code fences from LLM JSON responses."""
+    text = text.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+    return text
+
 
 def _embed(text: str, context: dict) -> list[float] | None:
     """Import and call embed_text.run() to get a vector."""
