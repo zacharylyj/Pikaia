@@ -470,12 +470,8 @@ class Tier3Agent(BaseAgent):
             resp = self._adapter.parse_response(raw)
             with self._tokens_lock:
                 self._tokens_used += resp.get("tokens_in", 0) + resp.get("tokens_out", 0)
-            content = resp.get("content", "").strip()
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-            steps = json.loads(content)
+            content = resp.get("content", "")
+            steps = json.loads(_strip_json_fences(content))
             if isinstance(steps, list) and all(isinstance(s, str) for s in steps):
                 return steps
         except Exception as e:
@@ -614,6 +610,19 @@ class AgentRunner:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _strip_json_fences(text: str) -> str:
+    """Remove markdown code fences from LLM JSON responses."""
+    text = text.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+    return text
+
 
 def _atomic_write(path: Path, content: str) -> None:
     """Write to a temp file then atomically replace."""

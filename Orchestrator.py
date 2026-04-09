@@ -739,7 +739,7 @@ class Orchestrator:
 
         # Register and spawn agent thread
         self._agents[agent_id] = record
-        self._spawn_agent(record, task_packet, ctx)
+        self._spawn_agent(record, task_packet)
 
         self._status(f"Dispatched {agent_id} (tier {tier}, pipeline: {pipeline}, timeout: {timeout}s, budget: {budget}t)")
         return record
@@ -801,7 +801,7 @@ class Orchestrator:
     # Step 5b — Agent spawn + ack
     # ------------------------------------------------------------------
 
-    def _spawn_agent(self, record: AgentRecord, task_packet: dict, ctx: TurnContext) -> None:
+    def _spawn_agent(self, record: AgentRecord, task_packet: dict) -> None:
         """
         Spawns the agent in a daemon thread using the real AgentRunner.
         AgentRunner handles the ack/state/result lifecycle internally.
@@ -913,13 +913,7 @@ class Orchestrator:
                 max_tokens=512,
                 temperature=0.0,
             )
-            raw = resp["content"].strip()
-            # Strip markdown fences if present
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            return json.loads(raw)
+            return json.loads(_strip_json_fences(resp["content"]))
         except Exception as e:
             logger.warning("Ack generation failed: %s — using default", e)
             return {
@@ -1183,8 +1177,7 @@ class Orchestrator:
         task_path = Path(record.worker_dir) / "task.json"
         if task_path.exists():
             task_packet = json.loads(task_path.read_text())
-            ctx = TurnContext()  # minimal context for retry
-            self._spawn_agent(record, task_packet, ctx)
+            self._spawn_agent(record, task_packet)
         return True
 
     def _escalate(self, record: AgentRecord, result: dict) -> None:
@@ -1319,12 +1312,7 @@ class Orchestrator:
                 messages=[{"role": "user", "content": f"Capability needed: {message}"}],
                 max_tokens=768,
             )
-            raw = resp["content"].strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            draft = json.loads(raw)
+            draft = json.loads(_strip_json_fences(resp["content"]))
         except Exception as e:
             logger.warning("SkillSmith draft failed: %s", e)
 
@@ -1365,12 +1353,7 @@ class Orchestrator:
                     max_tokens=256,
                     temperature=0.0,
                 )
-                eval_raw = eval_resp["content"].strip()
-                if eval_raw.startswith("```"):
-                    eval_raw = eval_raw.split("```")[1]
-                    if eval_raw.startswith("json"):
-                        eval_raw = eval_raw[4:]
-                evaluation = json.loads(eval_raw)
+                evaluation = json.loads(_strip_json_fences(eval_resp["content"]))
                 score      = float(evaluation.get("score", 0.0))
                 feedback   = evaluation.get("feedback", "")
                 passed     = evaluation.get("pass", False)
@@ -1403,12 +1386,7 @@ class Orchestrator:
                             }],
                             max_tokens=768,
                         )
-                        ref_raw = refine_resp["content"].strip()
-                        if ref_raw.startswith("```"):
-                            ref_raw = ref_raw.split("```")[1]
-                            if ref_raw.startswith("json"):
-                                ref_raw = ref_raw[4:]
-                        updated = json.loads(ref_raw)
+                        updated = json.loads(_strip_json_fences(refine_resp["content"]))
                         # Preserve identity fields
                         for key in ("skill_id", "version", "active", "created_by", "created_at"):
                             updated[key] = draft[key]
