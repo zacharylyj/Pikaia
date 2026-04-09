@@ -668,7 +668,11 @@ class Orchestrator:
         agent_id = f"agent_{uuid.uuid4().hex[:8]}"
         task_id  = f"task_{uuid.uuid4().hex[:8]}"
         tier     = match.tier
-        pipeline = match.pipeline
+        # Resolve pipeline name → model_id through config so agents can load
+        # the correct adapter without needing their own copy of the pipeline map.
+        # In debug mode this becomes "debug-model"; in normal mode it becomes
+        # a model_id like "claude-sonnet-4-6" (still valid for _load_adapter).
+        pipeline = self.config.pipelines.get(match.pipeline, match.pipeline)
 
         # Council mode for tier 4
         mode:    AgentMode = "team" if tier == 4 else "isolated"
