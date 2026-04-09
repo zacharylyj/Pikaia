@@ -18,14 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Path bootstrap — Orchestrator.py lives one level above Pikaia/
+# Path bootstrap
 # ---------------------------------------------------------------------------
 _BASE_PATH = Path(__file__).resolve().parent   # Pikaia/
-_REPO_ROOT  = _BASE_PATH.parent                # repo root (contains Orchestrator.py)
 
-for _p in (str(_REPO_ROOT), str(_BASE_PATH)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if str(_BASE_PATH) not in sys.path:
+    sys.path.insert(0, str(_BASE_PATH))
 
 from Orchestrator import Orchestrator, OrchestratorConfig, Tools  # noqa: E402
 from tools.registry import ToolRegistry                            # noqa: E402
