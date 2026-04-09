@@ -134,6 +134,12 @@ def _make_orchestrator(project: str, instance_id: str,
         instance_id = instance_id,
         caller      = "orchestrator",
     )
+
+    if debug:
+        # ToolRegistry loads config fresh from disk; patch its copy too so
+        # llm_call.py (which reads context["config"]["pipelines"]) uses debug-model
+        reg_cfg = registry.context.setdefault("config", {})
+        reg_cfg.setdefault("pipelines", {}).update(cfg.pipelines)
     tools = Tools(dispatch=registry.dispatch)
     orch  = Orchestrator(
         project     = project,
