@@ -34,7 +34,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-_MT_MIN_SCORE   = 0.45
+_MT_MIN_SCORE   = 0.55   # matches context_manager._MT_WEAK_THRESHOLD
 _FILE_MIN_SCORE = 0.40
 
 

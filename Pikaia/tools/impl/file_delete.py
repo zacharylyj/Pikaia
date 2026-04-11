@@ -26,14 +26,14 @@ def run(params: dict, context: dict) -> dict[str, Any]:
     raw_path  = Path(params["path"])
 
     if raw_path.is_absolute():
-        full_path = raw_path
+        full_path = raw_path.resolve()
         try:
-            rel = full_path.relative_to(base_path)
+            rel = full_path.relative_to(base_path.resolve())
         except ValueError:
             raise PermissionError(f"Path '{raw_path}' is outside base_path '{base_path}'")
     else:
         rel       = raw_path
-        full_path = base_path / raw_path
+        full_path = (base_path / raw_path).resolve()
 
     if not full_path.exists():
         return {"deleted": False, "path": str(rel)}

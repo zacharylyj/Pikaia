@@ -20,6 +20,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
+import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -71,12 +74,11 @@ def _load_adapter(pipeline: str, base_path: Path) -> Any:
     provider_file = base_path / "tools" / "providers" / f"{provider_name}.py"
     if not provider_file.exists():
         raise FileNotFoundError(f"Provider adapter not found: {provider_file}")
-    import sys as _sys
     _pikaia = str(base_path)
-    if _pikaia not in _sys.path:
-        _sys.path.insert(0, _pikaia)
+    if _pikaia not in sys.path:
+        sys.path.insert(0, _pikaia)
     _full_mod = f"tools.providers.{provider_name}"
-    mod = _sys.modules.get(_full_mod) or importlib.import_module(_full_mod)
+    mod = sys.modules.get(_full_mod) or importlib.import_module(_full_mod)
     return mod.Adapter(api_key=api_key, model_id=model_id), model_id, provider_name
 
 
@@ -626,8 +628,6 @@ def _strip_json_fences(text: str) -> str:
 
 def _atomic_write(path: Path, content: str) -> None:
     """Write to a temp file then atomically replace."""
-    import os
-    import tempfile
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp_")
     try:
