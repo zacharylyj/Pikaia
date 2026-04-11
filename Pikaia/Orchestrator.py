@@ -23,11 +23,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -66,15 +66,15 @@ class ToolError(Exception):
 
 
 def _tool_stub(name: str, params: dict[str, Any]) -> Any:
-    """Placeholder — swap for real ToolRegistry.run() in phase 2."""
+    """Fallback dispatch — raised when no real registry is wired up."""
     raise NotImplementedError(f"Tool '{name}' not yet wired up. params={params}")
 
 
 class Tools:
     """
-    Thin façade the orchestrator calls.
+    Thin façade the orchestrator uses to call tools.
     Each method maps 1-to-1 with a tool in tools.json.
-    Swap _tool_stub for real dispatch without touching the orchestrator.
+    Pass a real ToolRegistry.dispatch as the `dispatch` argument to wire it up.
     """
 
     def __init__(self, dispatch: Callable[[str, dict], Any] | None = None):
@@ -244,14 +244,13 @@ class TurnContext:
                 elapsed = ""
                 if f.get("opened_at"):
                     try:
-                        from datetime import datetime, timezone
                         opened = datetime.fromisoformat(f["opened_at"])
                         secs = int((datetime.now(timezone.utc) - opened).total_seconds())
                         elapsed = f" ({secs}s elapsed)"
                     except Exception:
                         pass
                 ct_lines.append(f"- [{f['status']}] {f['description']}{elapsed}")
-            parts.append(f"## Current state\n" + "\n".join(ct_lines))
+            parts.append("## Current state\n" + "\n".join(ct_lines))
 
         if self.st_summary:
             parts.append(f"## Session summary\n{self.st_summary}")
@@ -263,7 +262,7 @@ class TurnContext:
             rf_lines = []
             for rf in self.relevant_files:
                 rf_lines.append(f"- {rf['path']} (score {rf.get('score', '?')}): {rf.get('summary', '')}")
-            parts.append(f"## Relevant files\n" + "\n".join(rf_lines))
+            parts.append("## Relevant files\n" + "\n".join(rf_lines))
 
         return "\n\n".join(parts)
 
@@ -516,7 +515,7 @@ class Orchestrator:
                 max_tokens=256,
                 temperature=0.0,
             )
-            data = json.loads(_strip_json_fences(resp["content"]))
+            data = json.loads(_strip_json_fences(resp.get("content", "")))
             intent_type: IntentType = data.get("type", "task")
             if intent_type == "ambiguous":
                 return data.get("clarification", "Could you clarify?"), "ambiguous"
@@ -917,7 +916,7 @@ class Orchestrator:
                 max_tokens=512,
                 temperature=0.0,
             )
-            return json.loads(_strip_json_fences(resp["content"]))
+            return json.loads(_strip_json_fences(resp.get("content", "")))
         except Exception as e:
             logger.warning("Ack generation failed: %s — using default", e)
             return {
@@ -1061,8 +1060,10 @@ class Orchestrator:
             self._flag_human_review(record, result)
         elif status == "failed":
             retried = self._retry_agent(record, result)
-            if not retried:
-                self._escalate(record, result)
+            if retried:
+                # Re-enter wait loop for the retried run; cleanup happens on that return
+                return self._await_agent(record)
+            self._escalate(record, result)
 
         self._close_ct_flag(record.task_id, status="done" if status == "done" else "failed")
         self._cleanup_worker(record)
@@ -1120,7 +1121,8 @@ class Orchestrator:
             }
             _atomic_write_json(dev_idx_path, dev_index)
 
-            # Layer 1 — file_index.json (flat path registry)
+            # Layer 1 — file_index.json (structured display registry)
+            # Schema: {"dev": {"output": [{"path": filename, ...}]}, "worker": {...}}
             fi_path = self._project_path("file_index.json")
             file_index: dict = {}
             if fi_path.exists():
@@ -1128,10 +1130,16 @@ class Orchestrator:
                     file_index = json.loads(fi_path.read_text())
                 except Exception:
                     pass
-            file_index[path] = {
-                "summary":      summary[:120],
-                "last_indexed": _now_iso()[:10],
-            }
+            file_name  = Path(path).name
+            dev_output = file_index.setdefault("dev", {}).setdefault("output", [])
+            new_entry  = {"path": file_name, "summary": summary[:120],
+                          "last_indexed": _now_iso()[:10]}
+            existing   = next((i for i, e in enumerate(dev_output)
+                               if e.get("path") == file_name), None)
+            if existing is not None:
+                dev_output[existing] = new_entry
+            else:
+                dev_output.append(new_entry)
             _atomic_write_json(fi_path, file_index)
 
             self._status(f"Re-indexed {path}")
@@ -1160,6 +1168,7 @@ class Orchestrator:
     def _retry_agent(self, record: AgentRecord, result: dict) -> bool:
         """Returns True if retry was queued, False if retry_limit exhausted."""
         meta_path = Path(record.worker_dir) / "meta.json"
+        meta: dict = {}
         retries = 0
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
@@ -1169,11 +1178,8 @@ class Orchestrator:
             return False
 
         self._status(f"Retrying agent (attempt {retries + 1}/{self.config.retry_limit})...")
-        # Update meta retry count
-        if meta_path.exists():
-            meta = json.loads(meta_path.read_text())
-            meta["retries"] = retries + 1
-            meta_path.write_text(json.dumps(meta, indent=2))
+        meta["retries"] = retries + 1
+        meta_path.write_text(json.dumps(meta, indent=2))
 
         # Reset agent status and respawn — simplified; real impl rebuilds task packet
         record.status    = "running"
@@ -1272,7 +1278,7 @@ class Orchestrator:
                 max_tokens=128,
                 temperature=0.0,
             )
-            data = json.loads(_strip_json_fences(resp["content"]))
+            data = json.loads(_strip_json_fences(resp.get("content", "")))
             if data.get("persist") and data.get("content"):
                 embedding = self.tools.embed_text(data["content"])
                 entry = {
@@ -1523,7 +1529,6 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def _now_iso() -> str:
-    from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
 
 

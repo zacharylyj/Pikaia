@@ -24,6 +24,8 @@ returns:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -145,7 +147,6 @@ def _load_list(path: Path) -> list[dict]:
 
 
 def _save_json(path: Path, data: Any) -> None:
-    import os, tempfile
     tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".tmp_")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:

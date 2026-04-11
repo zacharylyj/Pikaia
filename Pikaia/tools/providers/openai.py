@@ -29,6 +29,15 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0
 
 
+def _to_openai_tool(t: dict) -> dict:
+    """Translate Anthropic tool schema (input_schema) → OpenAI function format (parameters)."""
+    fn: dict = {"name": t["name"], "description": t.get("description", "")}
+    schema = t.get("input_schema") or t.get("parameters", {})
+    if schema:
+        fn["parameters"] = schema
+    return {"type": "function", "function": fn}
+
+
 class Adapter(BaseAdapter):
 
     def build_request(
@@ -54,7 +63,7 @@ class Adapter(BaseAdapter):
         if temperature is not None:
             payload["temperature"] = temperature
         if tools:
-            payload["tools"]       = [{"type": "function", "function": t} for t in tools]
+            payload["tools"]       = [_to_openai_tool(t) for t in tools]
             payload["tool_choice"] = "auto"
         if stream:
             payload["stream"] = True

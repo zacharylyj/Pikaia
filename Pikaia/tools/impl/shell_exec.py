@@ -18,6 +18,7 @@ returns:
 
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import Any
 
@@ -27,8 +28,6 @@ def run(params: dict, context: dict) -> dict[str, Any]:
     cwd     = params.get("cwd") or context["base_path"]
     timeout = params.get("timeout", 30)
     env_extra: dict = params.get("env") or {}
-
-    import os
     env = {**os.environ, **env_extra} if env_extra else None
 
     timed_out = False

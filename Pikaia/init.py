@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -162,7 +163,6 @@ def _load_json(path: Path):
 
 
 def _save_json(path: Path, data) -> None:
-    import tempfile
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp_")
     try:

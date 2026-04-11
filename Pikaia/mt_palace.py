@@ -57,7 +57,7 @@ ROOM_KEYWORDS: dict[str, list[str]] = {
                    "assert", "pytest", "jest", "fixture"],
     "planning":   ["plan", "roadmap", "milestone", "goal", "sprint", "backlog",
                    "deadline", "estimate", "scope", "requirement"],
-    "decisions":  ["decided", "chose", "chose", "approach", "trade-off", "tradeoff",
+    "decisions":  ["decided", "chose", "approach", "trade-off", "tradeoff",
                    "rationale", "because", "reason", "conclusion", "agreed"],
     "research":   ["research", "study", "paper", "article", "reference", "source",
                    "found", "learned", "discovered", "benchmark", "analysis"],

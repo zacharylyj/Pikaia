@@ -87,7 +87,7 @@ def _read_mt(base_path: Path, query: str, top_k: int, context: dict) -> list[dic
             if e.get("embedding")
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
-        return [e for e, _ in scored[:top_k]]
+        return [{**e, "score": round(s, 3)} for e, s in scored[:top_k]]
 
     return active[:top_k]
 
