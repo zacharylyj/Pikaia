@@ -4,6 +4,22 @@ ToolRegistry
 Loads all enabled tools from tools.json, enforces caller permissions,
 and dispatches run(params, context) for each call.
 
+Tool execution standardisation (item 7)
+-----------------------------------------
+Every tool result is normalised to a ToolResult before being returned to
+the caller.  If a tool's run() already returns a dict with "success", it is
+passed through unchanged.  Plain dicts and non-dict values are wrapped.
+
+    ToolResult fields
+    -----------------
+    success : bool   — True if the call completed without exception
+    data    : Any    — the tool's actual output (original return value)
+    error   : str    — empty string on success; exception message on failure
+
+Callers that want raw dicts (e.g. agent._tool_loop storing result_str) can
+call dispatch() as before — the ToolResult is a TypedDict so it's fully
+JSON-serialisable.
+
 Usage (orchestrator wires this up):
 
     registry = ToolRegistry(
@@ -12,7 +28,6 @@ Usage (orchestrator wires this up):
         instance_id="inst_abc",
         caller="orchestrator",
     )
-    # Pass registry.dispatch as the Tools dispatch function:
     tools = Tools(dispatch=registry.dispatch)
 """
 
@@ -22,20 +37,55 @@ import importlib.util
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# ToolResult — standardised return shape
+# ---------------------------------------------------------------------------
+
+class ToolResult(TypedDict):
+    success: bool
+    data:    Any
+    error:   str
+
+
+def _normalise(raw: Any) -> ToolResult:
+    """
+    Wrap a raw tool return value into a ToolResult dict.
+
+    - If raw is already a dict with a "success" key, pass it through
+      (tool opted into the standard format explicitly).
+    - Otherwise wrap it as {success: True, data: raw, error: ""}.
+    """
+    if isinstance(raw, dict) and "success" in raw:
+        return ToolResult(
+            success=bool(raw.get("success", True)),
+            data=raw.get("data", raw),
+            error=str(raw.get("error", "")),
+        )
+    return ToolResult(success=True, data=raw, error="")
+
+
+def _error_result(exc: Exception) -> ToolResult:
+    return ToolResult(success=False, data=None, error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ToolRegistry
+# ---------------------------------------------------------------------------
+
 class ToolRegistry:
     def __init__(
         self,
-        base_path:   str,
-        project:     str,
-        instance_id: str,
-        caller:      str = "orchestrator",   # "orchestrator" | "agent" | "skillsmith"
-        agent_id:    str | None = None,
-        worker_dir:  str | None = None,
+        base_path:    str,
+        project:      str,
+        instance_id:  str,
+        caller:       str = "orchestrator",
+        agent_id:     str | None = None,
+        worker_dir:   str | None = None,
         token_budget: int | None = None,
     ) -> None:
         self.base_path   = str(base_path)
@@ -58,13 +108,18 @@ class ToolRegistry:
     # ------------------------------------------------------------------
 
     def dispatch(self, name: str, params: dict) -> Any:
-        """Main entry point. Called by Orchestrator's Tools.dispatch."""
+        """
+        Main entry point.  Dispatches to the tool impl and returns a
+        normalised ToolResult dict.
+
+        Raises ValueError for unknown tools, PermissionError for caller
+        violations (both propagate unchanged — callers handle them).
+        """
         if name not in self._tools:
             raise ValueError(f"Tool '{name}' not found or not enabled")
 
         mod, entry = self._tools[name]
 
-        # Permission check
         permissions = entry.get("permissions", [])
         if self.caller not in permissions:
             raise PermissionError(
@@ -72,6 +127,30 @@ class ToolRegistry:
                 f"Allowed: {permissions}"
             )
 
+        try:
+            raw = mod.run(params, self.context)
+            return _normalise(raw)
+        except (PermissionError, ValueError):
+            # Re-raise access/validation errors without wrapping
+            raise
+        except Exception as exc:
+            logger.warning("Tool '%s' raised exception: %s", name, exc)
+            raise
+
+    def dispatch_raw(self, name: str, params: dict) -> Any:
+        """
+        Like dispatch() but returns the raw tool output without normalisation.
+        Used internally where callers need the original dict shape.
+        """
+        if name not in self._tools:
+            raise ValueError(f"Tool '{name}' not found or not enabled")
+        mod, entry = self._tools[name]
+        permissions = entry.get("permissions", [])
+        if self.caller not in permissions:
+            raise PermissionError(
+                f"Caller '{self.caller}' is not permitted to use tool '{name}'. "
+                f"Allowed: {permissions}"
+            )
         return mod.run(params, self.context)
 
     def update_context(self, **kwargs: Any) -> None:
@@ -96,7 +175,7 @@ class ToolRegistry:
             if not entry.get("enabled", True):
                 continue
             tool_id   = entry["tool_id"]
-            impl_rel  = entry["impl"]                         # e.g. "tools/impl/shell_exec.py"
+            impl_rel  = entry["impl"]
             full_path = Path(self.base_path) / impl_rel
             if not full_path.exists():
                 logger.warning("Tool impl not found: %s", full_path)
