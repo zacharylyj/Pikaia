@@ -247,6 +247,138 @@ SCHEMAS: dict[str, dict] = {
         },
     },
 
+    "edit": {
+        "name": "edit",
+        "description": (
+            "Modify an existing file using exact string replacement. "
+            "old_string must appear exactly once unless replace_all=True."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path":        {"type": "string",  "description": "File path relative to base_path"},
+                "old_string":  {"type": "string",  "description": "Exact text to find and replace"},
+                "new_string":  {"type": "string",  "description": "Replacement text"},
+                "replace_all": {"type": "boolean", "description": "Replace every occurrence (default: false)"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+
+    "grep": {
+        "name": "grep",
+        "description": (
+            "Search file contents using regular expressions. "
+            "output_mode: files_with_matches (default) | content | count."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern":     {"type": "string",  "description": "Regex pattern to search for"},
+                "path":        {"type": "string",  "description": "File or directory to search"},
+                "glob":        {"type": "string",  "description": "Glob filter, e.g. '*.py'"},
+                "type":        {"type": "string",  "description": "File type alias: py, js, ts, json, md..."},
+                "context":     {"type": "integer", "description": "Lines of context around each match"},
+                "ignore_case": {"type": "boolean", "description": "Case-insensitive search"},
+                "output_mode": {"type": "string",  "enum": ["files_with_matches", "content", "count"]},
+                "max_results": {"type": "integer", "description": "Max results (default: 100)"},
+            },
+            "required": ["pattern"],
+        },
+    },
+
+    "glob": {
+        "name": "glob",
+        "description": "Find files matching a glob pattern. Returns paths sorted by mtime desc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py'"},
+                "path":    {"type": "string", "description": "Base directory (default: base_path)"},
+            },
+            "required": ["pattern"],
+        },
+    },
+
+    "list": {
+        "name": "list",
+        "description": "List files and directories at a path. Set recursive=true for full tree.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path":      {"type": "string",  "description": "Directory to list (default: base_path)"},
+                "recursive": {"type": "boolean", "description": "Recurse into subdirectories (default: false)"},
+            },
+            "required": [],
+        },
+    },
+
+    "apply_patch": {
+        "name": "apply_patch",
+        "description": "Apply a unified diff patch to files.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "patch":   {"type": "string",  "description": "Unified diff content"},
+                "path":    {"type": "string",  "description": "Target file path (overrides patch headers)"},
+                "dry_run": {"type": "boolean", "description": "Validate without writing (default: false)"},
+                "strip":   {"type": "integer", "description": "Path strip level (default: 1)"},
+            },
+            "required": ["patch"],
+        },
+    },
+
+    "todo_write": {
+        "name": "todo_write",
+        "description": "Create or update the agent todo list. Exactly one item may be in_progress.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "description": "Full todo list",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content":    {"type": "string"},
+                            "status":     {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+                            "activeForm": {"type": "string"},
+                        },
+                        "required": ["content", "status"],
+                    },
+                },
+            },
+            "required": ["todos"],
+        },
+    },
+
+    "web_search": {
+        "name": "web_search",
+        "description": "Search the web using DuckDuckGo. Returns titles, URLs, snippets. No API key needed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query":       {"type": "string",  "description": "Search query"},
+                "max_results": {"type": "integer", "description": "Max results (default: 10)"},
+            },
+            "required": ["query"],
+        },
+    },
+
+    "question": {
+        "name": "question",
+        "description": "Ask the user a question and wait for their response.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string",  "description": "Question to ask"},
+                "choices":  {"type": "array",   "items": {"type": "string"}, "description": "Valid choices to present"},
+                "timeout":  {"type": "integer", "description": "Seconds to wait (default: 120)"},
+            },
+            "required": ["question"],
+        },
+    },
+
     "context_fetch": {
         "name": "context_fetch",
         "description": (

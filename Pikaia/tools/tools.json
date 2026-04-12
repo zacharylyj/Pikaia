@@ -124,5 +124,61 @@
     "impl":        "tools/impl/context_fetch.py",
     "permissions": ["agent", "skillsmith"],
     "enabled":     true
+  },
+  {
+    "tool_id":     "edit",
+    "description": "Modify an existing file using exact string replacement. old_string must be unique unless replace_all=true.",
+    "impl":        "tools/impl/edit.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "grep",
+    "description": "Search file contents using regular expressions. Uses ripgrep when available, pure Python fallback. Supports files_with_matches, content, and count output modes.",
+    "impl":        "tools/impl/grep.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "glob",
+    "description": "Find files matching a glob pattern (e.g. **/*.py). Returns paths sorted by modification time. Uses ripgrep when available.",
+    "impl":        "tools/impl/glob.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "list",
+    "description": "List files and directories at a given path. Set recursive=true to walk the full tree.",
+    "impl":        "tools/impl/list_dir.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "apply_patch",
+    "description": "Apply a unified diff patch to files. Uses system patch command (available via Git); Python difflib fallback.",
+    "impl":        "tools/impl/apply_patch.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "todo_write",
+    "description": "Create or update the agent todo list (worker_dir/todos.json). Exactly one item may be in_progress at a time.",
+    "impl":        "tools/impl/todo_write.py",
+    "permissions": ["orchestrator", "agent"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "web_search",
+    "description": "Search the web using DuckDuckGo Lite. Returns titles, URLs, and snippets. No API key required.",
+    "impl":        "tools/impl/web_search.py",
+    "permissions": ["orchestrator", "agent", "skillsmith"],
+    "enabled":     true
+  },
+  {
+    "tool_id":     "question",
+    "description": "Ask the user a question and wait for their response. Signals waiting_for_input in state.json; polls answer.json; falls back to stdin if interactive.",
+    "impl":        "tools/impl/question.py",
+    "permissions": ["orchestrator", "agent"],
+    "enabled":     true
   }
 ]

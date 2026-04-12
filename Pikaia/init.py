@@ -7,6 +7,9 @@ Usage:
     python init.py --check              # validate structure + JSON + pipelines
     python init.py --fix                # auto-fix recoverable issues
     python init.py --project <name>     # scaffold a specific project (non-interactive)
+    python init.py --test               # run functional tool tests (no API key needed)
+    python init.py --test --tool grep   # run tests for a specific tool only
+    python init.py --test --fast        # skip slow / network-dependent tests
 """
 
 from __future__ import annotations
@@ -189,6 +192,20 @@ REQUIRED_DIRS = [
     "projects",
 ]
 
+# Core module files that must exist (added by recent features)
+REQUIRED_MODULE_FILES = [
+    "db.py",
+    "metrics.py",
+    "trajectory.py",
+    "tools/error_types.py",
+    "tools/schemas.py",
+    "tools/registry.py",
+    "agent.py",
+    "Orchestrator.py",
+    "context_manager.py",
+    "mt_palace.py",
+]
+
 # Files that must exist under _BASE_PATH (path → default value)
 REQUIRED_FILES: dict[str, object] = {
     "memory/lt.json":    [],
@@ -268,7 +285,7 @@ def scaffold(base: Path = _BASE_PATH) -> None:
 def scaffold_project(project: str, base: Path = _BASE_PATH) -> None:
     """Create per-project directory structure."""
     proj = base / "projects" / project
-    for sub in ("logs", "dev/output", "instances", "worker"):
+    for sub in ("logs", "dev/output", "instances", "worker", "trajectories"):
         (proj / sub).mkdir(parents=True, exist_ok=True)
 
     for fname, default in [
@@ -368,7 +385,7 @@ def check(base: Path = _BASE_PATH) -> CheckResult:
         else:
             r.good(str(path.relative_to(base)))
 
-    # ── 3. Tool impl files ───────────────────────────────────────────────────
+    # ── 3. Tool implementations ──────────────────────────────────────────────
     print("\n[3] Tool implementations")
     tools_json_path = base / "tools" / "tools.json"
     tools_data      = _load_json(tools_json_path) or []
@@ -377,14 +394,47 @@ def check(base: Path = _BASE_PATH) -> CheckResult:
     for entry in tools_data:
         if not entry.get("enabled", True):
             continue
-        impl = base / entry.get("impl", "")
-        if impl.exists():
-            r.good(entry["tool_id"])
-        else:
-            r.error(f"Missing impl: {entry.get('impl')} for tool '{entry.get('tool_id')}'")
+        tool_id = entry.get("tool_id", "?")
+        impl    = base / entry.get("impl", "")
+        # Check impl file exists
+        if not impl.exists():
+            r.error(f"Missing impl: {entry.get('impl')} for tool '{tool_id}'")
+            continue
+        # Check required fields
+        missing_fields = [f for f in ("tool_id", "impl", "permissions") if f not in entry]
+        if missing_fields:
+            r.error(f"{tool_id} — missing fields in tools.json: {missing_fields}")
+            continue
+        if not isinstance(entry.get("permissions"), list) or not entry["permissions"]:
+            r.error(f"{tool_id} — 'permissions' must be a non-empty list")
+            continue
+        r.good(f"{tool_id}  ({', '.join(entry['permissions'])})")
 
-    # ── 4. Pipeline → model coverage ────────────────────────────────────────
-    print("\n[4] Pipeline model coverage")
+    # ── 4. Tool schema coverage ──────────────────────────────────────────────
+    print("\n[4] Tool schema coverage")
+    try:
+        import importlib.util as _ilu
+        _sp = str(base)
+        if _sp not in sys.path:
+            sys.path.insert(0, _sp)
+        _schemas_path = base / "tools" / "schemas.py"
+        _spec = _ilu.spec_from_file_location("_schemas_check", str(_schemas_path))
+        _smod = _ilu.module_from_spec(_spec)       # type: ignore[arg-type]
+        _spec.loader.exec_module(_smod)             # type: ignore[union-attr]
+        _merged = _smod._get_merged_schemas()
+        for entry in tools_data:
+            if not entry.get("enabled", True):
+                continue
+            tid = entry.get("tool_id", "")
+            if tid in _merged:
+                r.good(f"{tid} — schema present")
+            else:
+                r.warning(f"{tid} — no schema in schemas.py or impl SCHEMA dict (agents cannot use this tool)")
+    except Exception as exc:
+        r.warning(f"Schema coverage check skipped: {exc}")
+
+    # ── 5. Pipeline → model coverage ────────────────────────────────────────
+    print("\n[5] Pipeline model coverage")
     cfg         = _load_json(base / "config.json") or {}
     pipelines   = cfg.get("pipelines", {})
     raw_models  = _load_json(base / "models.json") or []
@@ -396,9 +446,39 @@ def check(base: Path = _BASE_PATH) -> CheckResult:
             r.good(f"{pipe} → {model_id}")
         else:
             r.error(f"Pipeline '{pipe}' references unknown/disabled model '{model_id}'")
+    # Fast model routing
+    fast_model = cfg.get("fast_model", "")
+    if fast_model:
+        if fast_model in model_ids:
+            r.good(f"fast_model → {fast_model}")
+        else:
+            r.warning(f"fast_model '{fast_model}' not found in models.json (routing disabled)")
 
-    # ── 5. Skill embeddings ──────────────────────────────────────────────────
-    print("\n[5] Skill embeddings")
+    # ── 6. Core module file integrity ────────────────────────────────────────
+    print("\n[6] Core module files")
+    for rel in REQUIRED_MODULE_FILES:
+        p = base / rel
+        if p.exists():
+            r.good(rel)
+        else:
+            r.error(f"Missing core module: {rel}")
+
+    # ── 7. Config key completeness ───────────────────────────────────────────
+    print("\n[7] Config key completeness")
+    cfg = _load_json(base / "config.json") or {}
+    # Flatten DEFAULT_CONFIG (exclude nested dicts like 'pipelines')
+    flat_defaults = {k: v for k, v in DEFAULT_CONFIG.items() if not isinstance(v, dict)}
+    missing_keys  = [k for k in flat_defaults if k not in cfg]
+    extra_keys    = [k for k in cfg if k not in DEFAULT_CONFIG and k not in ("pipelines",)]
+    if missing_keys:
+        r.warning(f"{len(missing_keys)} config key(s) missing: {missing_keys} — run --fix to add defaults")
+    else:
+        r.good("All default config keys present")
+    if extra_keys:
+        r.good(f"{len(extra_keys)} project-specific key(s): {extra_keys[:5]}")
+
+    # ── 8. Skill embeddings ──────────────────────────────────────────────────
+    print("\n[8] Skill embeddings")
     skills = _load_json(base / "skills" / "skills.json") or []
     if isinstance(skills, dict):
         skills = [skills]
@@ -415,17 +495,19 @@ def check(base: Path = _BASE_PATH) -> CheckResult:
         if tmpl and not (base / "skills" / tmpl).exists():
             r.warning(f"{name} — template file missing: {tmpl}")
 
-    # ── 6. Stale CT flags ────────────────────────────────────────────────────
-    print("\n[6] CT flag health (all projects)")
+    # ── 9. Stale CT flags ────────────────────────────────────────────────────
+    print("\n[9] CT flag health (all projects)")
     projects_dir = base / "projects"
     if projects_dir.exists():
-        for proj_dir in projects_dir.iterdir():
+        found_any = False
+        for proj_dir in sorted(projects_dir.iterdir()):
             if not proj_dir.is_dir():
                 continue
             ct_path = proj_dir / "ct.json"
             ct_data = _load_json(ct_path) or []
             open_flags = [e for e in ct_data if e.get("status") == "open"]
             for flag in open_flags:
+                found_any = True
                 opened_at = flag.get("opened_at", "")
                 try:
                     opened_dt = datetime.fromisoformat(opened_at)
@@ -440,27 +522,51 @@ def check(base: Path = _BASE_PATH) -> CheckResult:
                                f"{flag.get('description','')[:40]}")
                 except Exception:
                     r.warning(f"[{proj_dir.name}] CT flag with unparseable opened_at: {opened_at}")
+        if not found_any:
+            r.good("No open CT flags")
     else:
         r.good("No projects yet")
 
-    # ── 7. File index coverage ───────────────────────────────────────────────
-    print("\n[7] File index coverage (all projects)")
+    # ── 10. File index coverage ──────────────────────────────────────────────
+    print("\n[10] File index coverage (all projects)")
     if projects_dir.exists():
-        for proj_dir in projects_dir.iterdir():
+        found_any = False
+        for proj_dir in sorted(projects_dir.iterdir()):
             if not proj_dir.is_dir():
                 continue
             dev_out = proj_dir / "dev" / "output"
             dev_idx = _load_json(proj_dir / "dev" / "index.json") or {}
             if dev_out.exists():
+                found_any = True
                 actual_files = set(
                     str(f.relative_to(proj_dir)) for f in dev_out.rglob("*") if f.is_file()
                 )
                 indexed = set(dev_idx.keys())
                 missing = actual_files - indexed
                 for mf in missing:
-                    r.warning(f"[{proj_dir.name}] Not indexed: {mf} — run /check --fix to re-index")
+                    r.warning(f"[{proj_dir.name}] Not indexed: {mf} — run --fix to queue re-index")
                 if not missing:
                     r.good(f"[{proj_dir.name}] All dev/output files indexed ({len(actual_files)})")
+        if not found_any:
+            r.good("No dev/output files yet")
+
+    # ── 11. Trajectory + DB directories ─────────────────────────────────────
+    print("\n[11] Observability paths")
+    if projects_dir.exists():
+        for proj_dir in sorted(projects_dir.iterdir()):
+            if not proj_dir.is_dir():
+                continue
+            traj_dir = proj_dir / "trajectories"
+            if traj_dir.exists():
+                count = len(list(traj_dir.glob("*.jsonl")))
+                r.good(f"[{proj_dir.name}] trajectories/ exists ({count} JSONL file(s))")
+            else:
+                r.warning(f"[{proj_dir.name}] trajectories/ missing — run --fix to create")
+    db_path = base / "pikaia.db"
+    if db_path.exists():
+        r.good(f"pikaia.db present ({db_path.stat().st_size // 1024} KB)")
+    else:
+        r.good("pikaia.db not yet created (created on first agent run)")
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print(f"\n{'─'*50}")
@@ -560,6 +666,19 @@ def fix(base: Path = _BASE_PATH) -> None:
             _info(f"  Added {added} missing model(s) to models.json")
             fixed += 1
 
+    # Fix 6: create missing trajectories/ dirs for all projects
+    print("\n[fix] Creating missing trajectories/ directories...")
+    projects_dir = base / "projects"
+    if projects_dir.exists():
+        for proj_dir in projects_dir.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            traj_dir = proj_dir / "trajectories"
+            if not traj_dir.exists():
+                traj_dir.mkdir(parents=True, exist_ok=True)
+                _info(f"  Created {proj_dir.name}/trajectories/")
+                fixed += 1
+
     # Remaining issues require API access (re-indexing dev/ files)
     print("\n[fix] Note: re-indexing unindexed dev/ files requires a running API key.")
     print("      Start the agent and run tasks to trigger re-indexing automatically.")
@@ -599,6 +718,9 @@ def main() -> None:
     parser.add_argument("--check",   action="store_true", help="Validate structure")
     parser.add_argument("--fix",     action="store_true", help="Auto-repair recoverable issues")
     parser.add_argument("--project", default=None,        help="Create / scaffold a specific project")
+    parser.add_argument("--test",    action="store_true", help="Run functional tool tests")
+    parser.add_argument("--tool",    default=None,        help="Limit --test to a specific tool name")
+    parser.add_argument("--fast",    action="store_true", help="Skip slow / network tests")
     args = parser.parse_args()
 
     if args.check:
@@ -607,12 +729,29 @@ def main() -> None:
 
     elif args.fix:
         fix()
-        check()   # show status after fix
+        check()
 
     elif args.project:
         scaffold()
         scaffold_project(args.project)
         print(f"Project '{args.project}' ready.")
+
+    elif args.test:
+        # Import and run the tool test suite
+        test_path = _BASE_PATH / "test_tools.py"
+        if not test_path.exists():
+            print(f"\033[31mtest_tools.py not found at {test_path}\033[0m")
+            sys.exit(1)
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location("test_tools", str(test_path))
+        mod  = _ilu.module_from_spec(spec)          # type: ignore[arg-type]
+        spec.loader.exec_module(mod)                 # type: ignore[union-attr]
+        passed = mod.run_tests(
+            base_path = str(_BASE_PATH),
+            tool      = args.tool,
+            fast      = args.fast,
+        )
+        sys.exit(0 if passed else 1)
 
     else:
         # First-run wizard
