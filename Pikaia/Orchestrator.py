@@ -80,6 +80,17 @@ class Tools:
     def __init__(self, dispatch: Callable[[str, dict], Any] | None = None):
         self._dispatch = dispatch or _tool_stub
 
+    @staticmethod
+    def _unwrap(result: Any) -> Any:
+        """
+        Extract the payload from a ToolResult envelope.
+        If result is a ToolResult dict ({success, data, error}), returns data.
+        Otherwise returns result unchanged (backward-compat with raw tool output).
+        """
+        if isinstance(result, dict) and "success" in result and "data" in result:
+            return result["data"]
+        return result
+
     def llm_call(
         self,
         pipeline: str,
@@ -88,13 +99,13 @@ class Tools:
         max_tokens: int = 1024,
         temperature: float = 0.7,
     ) -> dict[str, Any]:
-        return self._dispatch("llm_call", dict(
+        return self._unwrap(self._dispatch("llm_call", dict(
             pipeline=pipeline, system=system, messages=messages,
             max_tokens=max_tokens, temperature=temperature,
-        ))
+        )))
 
     def embed_text(self, text: str) -> list[float]:
-        result = self._dispatch("embed_text", {"text": text})
+        result = self._unwrap(self._dispatch("embed_text", {"text": text}))
         # embed_text.run() returns {"embedding": [...], "dim": int, "model": str}
         if isinstance(result, dict):
             return result.get("embedding", [])
@@ -108,10 +119,10 @@ class Tools:
         project: str = "",
         instance_id: str = "",
     ) -> list[dict]:
-        return self._dispatch("memory_read", dict(
+        return self._unwrap(self._dispatch("memory_read", dict(
             layer=layer, query=query, top_k=top_k,
             project=project, instance_id=instance_id,
-        ))
+        )))
 
     def memory_write(self, layer: str, entry: dict, project: str = "", instance_id: str = "") -> None:
         self._dispatch("memory_write", dict(
@@ -119,7 +130,7 @@ class Tools:
         ))
 
     def file_read(self, path: str) -> str:
-        result = self._dispatch("file_read", {"path": path})
+        result = self._unwrap(self._dispatch("file_read", {"path": path}))
         # file_read.run() returns {"content": str, "path": str, "size_bytes": int}
         if isinstance(result, dict):
             return result.get("content", "")
@@ -138,7 +149,7 @@ class Tools:
         self._dispatch("cli_output", {"content": content, "type": type_})
 
     def skill_read(self, skill_id: str) -> dict:
-        return self._dispatch("skill_read", {"skill_id": skill_id})
+        return self._unwrap(self._dispatch("skill_read", {"skill_id": skill_id}))
 
     def skill_write(self, skill: dict, template_content: str) -> None:
         self._dispatch("skill_write", {"skill": skill, "template_content": template_content})

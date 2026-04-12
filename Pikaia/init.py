@@ -44,6 +44,56 @@ DEFAULT_CONFIG = {
     "skillsmith_pass_score": 0.80,
     "embedding_dim":         1536,
     "interfaces":            ["cli"],
+
+    # ── Tier 1: Core Stability ──────────────────────────────────────────
+    # Step budget: hard cap on tool-loop iterations per agent run.
+    # Orchestrator may override via task_packet["max_steps"].
+    "max_steps":                     15,
+
+    # Context compression: trigger at this fraction of the model context window.
+    # Orchestrator may override via task_packet["compression_threshold"].
+    "context_compression_threshold": 0.80,
+
+    # Parallel tool execution: max worker threads for independent tool calls.
+    # Orchestrator may override via task_packet["parallel_tool_workers"].
+    "parallel_tool_max_workers":     4,
+
+    # Error retry policy (applied per ErrorType by _tool_loop).
+    # Orchestrator may patch context["error_retry_max"] per task.
+    "error_retry_max":               3,
+    "error_retry_base_delay":        1.0,   # seconds; doubles on each retry
+
+    # ── Tier 2: Efficiency ──────────────────────────────────────────────
+    # Model routing: simple tasks (short prompt, ≤1 tool) are routed here.
+    # Set to "" or null to disable routing (always use pipeline model).
+    # Orchestrator may override via task_packet["fast_model"].
+    "fast_model":                    "claude-haiku-4-5-20251001",
+    "fast_model_threshold_words":    50,    # route to fast_model if prompt ≤ N words
+    "fast_model_threshold_tools":    1,     # route to fast_model if tools_allowed ≤ N
+
+    # ── Tier 3: Scaling & Data Layer ────────────────────────────────────
+    # Trajectory logging: store per-run replay buffer as JSONL + SQLite.
+    # Orchestrator may disable for sensitive tasks via task_packet["trajectory_logging"].
+    "trajectory_logging":            True,
+
+    # Observability metrics: collect tokens/latency/tool stats per run.
+    # Orchestrator may adjust granularity via task_packet["metrics_enabled"].
+    "metrics_enabled":               True,
+
+    # API key rotation: rotate provider keys on 429/auth failures.
+    # Requires keys.json to list multiple keys: {"anthropic": ["key1", "key2"]}.
+    "key_rotation_enabled":          True,
+
+    # ── Bonus ────────────────────────────────────────────────────────────
+    # Loop awareness: inject remaining step budget + tool summary after each turn.
+    # Orchestrator may disable via task_packet["loop_awareness"].
+    "loop_awareness_injection":      True,
+
+    # Tool dependency detection: analyse tool calls for data dependencies
+    # before dispatching; independent calls run in parallel.
+    # Orchestrator may override strategy via task_packet["tool_exec_strategy"].
+    "tool_dependency_detection":     True,
+
     "pipelines": {
         "orchestration":     "claude-sonnet-4-6",
         "task_planning":     "claude-sonnet-4-6",

@@ -1,15 +1,45 @@
 """
 schemas.py
 ----------
-Anthropic tool_use input schemas for all 17 tools.
-Used by agents to advertise available tools in llm_call requests.
+Anthropic tool_use input schemas for all built-in tools.
 
-Usage:
+Self-registering discovery (item 6)
+-------------------------------------
+Tools can declare their own schema by exposing a module-level SCHEMA dict
+inside tools/impl/<tool_name>.py:
+
+    # tools/impl/my_tool.py
+    SCHEMA = {
+        "name": "my_tool",
+        "description": "Does something useful.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"arg": {"type": "string"}},
+            "required": ["arg"],
+        },
+    }
+
+get_schemas() merges built-in schemas with any SCHEMA found in impl modules,
+with impl-level schemas taking precedence (so tools can override defaults or
+add brand-new tools without touching this file).
+
+Usage
+-----
     from tools.schemas import get_schemas
     tool_schemas = get_schemas(["web_fetch", "file_write", "llm_call"])
 """
 
 from __future__ import annotations
+
+import importlib.util
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Built-in schemas  (Anthropic input_schema format)
+# ---------------------------------------------------------------------------
 
 SCHEMAS: dict[str, dict] = {
 
@@ -159,7 +189,6 @@ SCHEMAS: dict[str, dict] = {
                 "top_k":       {"type": "integer", "description": "Max results (default: 5)"},
                 "project":     {"type": "string",  "description": "Project name (default: current)"},
                 "instance_id": {"type": "string",  "description": "Instance ID (default: current)"},
-                # Palace-specific (layer=mt)
                 "wing": {
                     "type": "string",
                     "description": "Filter MT by wing domain (technical/decisions/knowledge/issues)",
@@ -182,7 +211,6 @@ SCHEMAS: dict[str, dict] = {
                         "3=full semantic search (default when no wing/room given)"
                     ),
                 },
-                # KG-specific (layer=kg)
                 "subject":          {"type": "string", "description": "KG triple subject filter"},
                 "predicate":        {"type": "string", "description": "KG triple predicate filter"},
                 "object":           {"type": "string", "description": "KG triple object filter"},
@@ -252,6 +280,59 @@ SCHEMAS: dict[str, dict] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Auto-discovery: merge SCHEMA dicts from impl modules
+# ---------------------------------------------------------------------------
+
+def _discover_impl_schemas(impl_dir: Path | None = None) -> dict[str, dict]:
+    """
+    Scan tools/impl/*.py for module-level SCHEMA dicts.
+    Returns a mapping of tool_name → schema dict.
+    Silently skips files that have no SCHEMA or fail to load.
+    """
+    if impl_dir is None:
+        impl_dir = Path(__file__).resolve().parent / "impl"
+    if not impl_dir.is_dir():
+        return {}
+
+    discovered: dict[str, dict] = {}
+    for path in sorted(impl_dir.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(path.stem, str(path))
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            schema = getattr(mod, "SCHEMA", None)
+            if isinstance(schema, dict) and "name" in schema:
+                discovered[schema["name"]] = schema
+        except Exception as exc:
+            logger.debug("Schema discovery skipped %s: %s", path.name, exc)
+    return discovered
+
+
+# Cached merged view: built-in SCHEMAS + discovered impl schemas.
+# impl schemas take precedence so tools can override defaults.
+_merged: dict[str, dict] | None = None
+
+
+def _get_merged_schemas() -> dict[str, dict]:
+    global _merged
+    if _merged is None:
+        discovered = _discover_impl_schemas()
+        _merged = {**SCHEMAS, **discovered}
+    return _merged
+
+
 def get_schemas(tool_names: list[str]) -> list[dict]:
     """Return Anthropic-format tool schemas for the given tool names."""
-    return [SCHEMAS[n] for n in tool_names if n in SCHEMAS]
+    merged = _get_merged_schemas()
+    return [merged[n] for n in tool_names if n in merged]
+
+
+def invalidate_schema_cache() -> None:
+    """Force re-discovery on next get_schemas() call (use after installing new tools)."""
+    global _merged
+    _merged = None
