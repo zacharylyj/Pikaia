@@ -10,12 +10,16 @@ Scope rules (paths resolved relative to base_path):
   skillsmith   : skills/**, projects/{project}/worker/skillsmith/**
 
 params:
-    path : str   - path relative to base_path (or absolute)
+    path   : str       - path relative to base_path (or absolute)
+    offset : int|None  - first line to return, 1-based (default: 1)
+    limit  : int|None  - max lines to return (default: all)
 
 returns:
     content    : str
     path       : str   - normalised relative path
     size_bytes : int
+    lines      : int   - total lines in file
+    truncated  : bool  - True when offset/limit caused partial read
 """
 
 from __future__ import annotations
@@ -84,7 +88,7 @@ def run(params: dict, context: dict) -> dict[str, Any]:
     if b"\x00" in raw_bytes[:512]:
         raise ValueError(f"Binary file detected; file_read only supports text: {full_path}")
 
-    content = raw_bytes.decode("utf-8", errors="replace")
+    full_content = raw_bytes.decode("utf-8", errors="replace")
 
     # Decrement file_budget if set
     file_budget = context.get("file_budget")
@@ -95,8 +99,26 @@ def run(params: dict, context: dict) -> dict[str, Any]:
                 f"file_budget exceeded: max {file_budget['max_files']} files per task"
             )
 
+    # Offset / limit slicing (1-based line numbers, matching cat -n convention)
+    offset = params.get("offset")
+    limit  = params.get("limit")
+    all_lines = full_content.splitlines(keepends=True)
+    total_lines = len(all_lines)
+    truncated   = False
+
+    if offset is not None or limit is not None:
+        start = max(0, (int(offset) - 1) if offset else 0)
+        end   = (start + int(limit)) if limit else len(all_lines)
+        sliced = all_lines[start:end]
+        truncated = (start > 0 or end < len(all_lines))
+        content = "".join(sliced)
+    else:
+        content = full_content
+
     return {
         "content":    content,
         "path":       str(rel),
         "size_bytes": len(raw_bytes),
+        "lines":      total_lines,
+        "truncated":  truncated,
     }
