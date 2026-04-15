@@ -34,6 +34,7 @@ import math
 import os
 import re
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,9 @@ _BACKEND_CACHE: dict[str, Any] = {}
 
 _EMBED_MOD_CACHE: dict[str, Any] = {}
 """Cache of embed_text modules keyed by str(base_path)."""
+
+_RAW_LOG_LOCK: threading.Lock = threading.Lock()
+"""Serialises concurrent appends to mt_raw.jsonl within the same process."""
 
 
 # ---------------------------------------------------------------------------
@@ -496,11 +500,26 @@ class KnowledgeGraph:
     Schema:
       triples : list[{id, subject, predicate, object, valid_from, valid_to, created_at}]
       entities: dict[name → {type, code, aliases}]
+
+    Indexing
+    --------
+    A subject → [index] and (subject, predicate) → [index] in-memory index is
+    built the first time data is loaded and invalidated on every write.  This
+    turns subject-filtered ``query()`` calls from O(n) full-scan to O(k) where
+    k is the number of triples with that subject — a significant win once the
+    KG grows to thousands of triples.
     """
 
     def __init__(self, kg_path: Path) -> None:
         """Initialise with path to the KG JSON file."""
-        self._path = kg_path
+        self._path   = kg_path
+        self._data:      dict | None                       = None
+        self._subj_idx:  dict[str, list[int]]              = {}
+        self._pred_idx:  dict[tuple[str, str], list[int]]  = {}
+
+    # ------------------------------------------------------------------
+    # Internal cache management
+    # ------------------------------------------------------------------
 
     def _load(self) -> dict:
         """Load KG data from disk, returning empty structure on failure."""
@@ -511,8 +530,33 @@ class KnowledgeGraph:
                 pass
         return {"triples": [], "entities": {}}
 
+    def _load_cached(self) -> dict:
+        """Return cached data (or load + index from disk on first call)."""
+        if self._data is None:
+            self._data = self._load()
+            self._rebuild_index()
+        return self._data
+
+    def _rebuild_index(self) -> None:
+        """Build subject and (subject, predicate) lookup indices."""
+        self._subj_idx = {}
+        self._pred_idx = {}
+        for i, t in enumerate(self._data.get("triples", [])):   # type: ignore[union-attr]
+            s = t.get("subject", "").lower()
+            p = t.get("predicate", "").lower()
+            if s:
+                self._subj_idx.setdefault(s, []).append(i)
+                if p:
+                    self._pred_idx.setdefault((s, p), []).append(i)
+
+    def _invalidate_cache(self) -> None:
+        """Drop the in-memory cache so the next read reloads from disk."""
+        self._data     = None
+        self._subj_idx = {}
+        self._pred_idx = {}
+
     def _save(self, data: dict) -> None:
-        """Atomically save KG data to disk."""
+        """Atomically save KG data to disk and invalidate the in-memory cache."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=self._path.parent, prefix=".tmp_")
         try:
@@ -525,6 +569,8 @@ class KnowledgeGraph:
             except OSError:
                 pass
             raise
+        # Drop the cache so the next read sees the freshly written state.
+        self._invalidate_cache()
 
     def add(
         self,
@@ -535,17 +581,17 @@ class KnowledgeGraph:
         valid_to:   str | None = None,
     ) -> str:
         """Add a triple, auto-closing contradicting active triples. Returns its id."""
-        data = self._load()
+        data = self._load_cached()
 
-        # Contradiction detection: close active triples with same (subject, predicate)
-        # but a different object
-        today = _now_iso()[:10]
+        # Contradiction detection: use the (subject, predicate) index to
+        # narrow the scan from O(n) to O(k) matching triples.
+        today    = _now_iso()[:10]
+        s_low, p_low = subject.lower(), predicate.lower()
+        candidate_indices = self._pred_idx.get((s_low, p_low), [])
         contradictions = 0
-        for t in data["triples"]:
-            if (t["subject"].lower() == subject.lower() and
-                    t["predicate"].lower() == predicate.lower() and
-                    t["object"].lower() != obj.lower() and
-                    t.get("valid_to") is None):
+        for i in candidate_indices:
+            t = data["triples"][i]
+            if t["object"].lower() != obj.lower() and t.get("valid_to") is None:
                 t["valid_to"] = today
                 contradictions += 1
 
@@ -562,7 +608,7 @@ class KnowledgeGraph:
             triple["_supersedes"] = contradictions
 
         data["triples"].append(triple)
-        self._save(data)
+        self._save(data)   # also calls _invalidate_cache()
         return triple["id"]
 
     def query(
@@ -572,29 +618,47 @@ class KnowledgeGraph:
         obj:       str | None = None,
         as_of:     str | None = None,     # ISO date string
     ) -> list[dict]:
-        """Return triples matching filters. as_of filters by temporal validity."""
-        data    = self._load()
+        """Return triples matching filters. as_of filters by temporal validity.
+
+        When *subject* is provided, the in-memory index narrows the scan to
+        only triples with that subject (or subject+predicate pair) before
+        applying the remaining filters.
+        """
+        data    = self._load_cached()
+        triples = data["triples"]
+
+        # Fast path: use the index when a subject filter is given
+        if subject:
+            s_low = subject.lower()
+            if predicate:
+                indices = self._pred_idx.get((s_low, predicate.lower()), [])
+            else:
+                indices = self._subj_idx.get(s_low, [])
+            candidates: list[dict] = [triples[i] for i in indices]
+        else:
+            candidates = triples
+
         results = []
-        for t in data["triples"]:
-            if subject   and t["subject"].lower()   != subject.lower():   continue
+        for t in candidates:
+            # subject already matched via index (or no filter requested)
+            if subject   and not predicate and t["subject"].lower()   != subject.lower():   continue
             if predicate and t["predicate"].lower()  != predicate.lower(): continue
             if obj       and t["object"].lower()     != obj.lower():       continue
             if as_of:
-                if t.get("valid_from") and t["valid_from"] > as_of:       continue
-                if t.get("valid_to")   and t["valid_to"]   < as_of:       continue
+                if t.get("valid_from") and t["valid_from"] > as_of: continue
+                if t.get("valid_to")   and t["valid_to"]   < as_of: continue
             results.append(t)
         return results
 
     def invalidate(self, subject: str, predicate: str, obj: str) -> int:
         """Mark matching triples as no longer valid (set valid_to = now). Returns count."""
-        data  = self._load()
+        data  = self._load_cached()
         today = _now_iso()[:10]
         count = 0
-        for t in data["triples"]:
-            if (t["subject"].lower()   == subject.lower()   and
-                    t["predicate"].lower() == predicate.lower() and
-                    t["object"].lower()    == obj.lower()        and
-                    t.get("valid_to") is None):
+        s_low, p_low = subject.lower(), predicate.lower()
+        for i in self._pred_idx.get((s_low, p_low), []):
+            t = data["triples"][i]
+            if t["object"].lower() == obj.lower() and t.get("valid_to") is None:
                 t["valid_to"] = today
                 count += 1
         if count:
@@ -603,7 +667,7 @@ class KnowledgeGraph:
 
     def merge_entities(self, entities: dict[str, Any]) -> None:
         """Upsert detected entities into the entity registry."""
-        data = self._load()
+        data = self._load_cached()
         reg  = data.setdefault("entities", {})
         codes = entities.get("codes", {})
         for name in entities.get("persons", []):
@@ -971,6 +1035,45 @@ def _sanitize(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Raw-log backup  (append-only, pre-AAAK recovery store)
+# ---------------------------------------------------------------------------
+
+def _append_raw_log(entry: dict, base_path: Path) -> None:
+    """Append the *original* (pre-AAAK) entry to ``memory/mt_raw.jsonl``.
+
+    Why this exists
+    ---------------
+    The AAAK codec is a *lossy* transformation.  If its format ever changes or
+    a bug corrupts ``mt.json``, the raw log lets you rebuild from scratch.
+    Each line is a standalone JSON object (JSON-Lines format) — easy to stream
+    with ``json.loads(line)`` without loading the whole file.
+
+    What is stored
+    --------------
+    The entry verbatim, minus the ``embedding`` vector (too large, can be
+    re-generated from ``content`` via embed_text).  A ``_logged_at`` timestamp
+    is injected so the log is independently auditable.
+
+    Thread safety
+    -------------
+    ``_RAW_LOG_LOCK`` serialises concurrent appends within the process.
+    The underlying ``open('a') + write`` is effectively atomic on POSIX for
+    lines ≤ PIPE_BUF (4 096 bytes); the lock defends against interleaved
+    multi-line writes on Windows and for larger entries.
+    """
+    raw_log_path = base_path / "memory" / "mt_raw.jsonl"
+    raw_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    log_entry = {k: v for k, v in entry.items() if k != "embedding"}
+    log_entry.setdefault("_logged_at", _now_iso())
+
+    line = json.dumps(log_entry, ensure_ascii=False) + "\n"
+    with _RAW_LOG_LOCK:
+        with open(raw_log_path, "a", encoding="utf-8") as fh:
+            fh.write(line)
+
+
+# ---------------------------------------------------------------------------
 # MT Writer — enriches entries before persistence
 # ---------------------------------------------------------------------------
 
@@ -1038,10 +1141,18 @@ class MTWriter:
 
     @staticmethod
     def write(entry: dict, base_path: Path, context: dict) -> dict:
-        """Full write pipeline: sanitize → embed → enrich → dedup → save."""
+        """Full write pipeline: raw-log → sanitize → embed → enrich → dedup → save."""
         config = _get_palace_config(base_path)
         backend = _get_mt_backend(base_path, config)
         now = _now_iso()
+
+        # 0. Append pre-AAAK raw entry to the recovery log.
+        #    Done before any transformation so the log always reflects what
+        #    the caller originally wrote, not the lossy compressed form.
+        try:
+            _append_raw_log(entry, base_path)
+        except Exception:
+            pass  # logging failure must never block a write
 
         # 1. Sanitize content
         if entry.get("content"):

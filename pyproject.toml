@@ -1,0 +1,61 @@
+[project]
+name = "pikaia"
+version = "0.2.0"
+description = "Multi-tier agentic AI framework — 4 agent tiers, 26 tools, MemPalace v2 memory, provider-agnostic LLM routing"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["ai", "agent", "llm", "memory", "rag", "anthropic", "openai"]
+
+# Zero required third-party packages.
+# All LLM providers are called via stdlib urllib.request.
+# Install optional groups for extended backends (see below).
+dependencies = []
+
+[project.optional-dependencies]
+# Fast columnar vector backend for MT memory (replaces O(n) JSON cosine scan)
+lancedb = [
+    "lancedb>=0.6.0",
+    "pyarrow>=14.0.0",
+]
+
+# DeepSeek-R1 1.5B via HuggingFace transformers (Ollama needs no Python deps)
+deepseek = [
+    "transformers>=4.40.0",
+    "torch>=2.2.0",
+    "accelerate>=0.30.0",
+]
+
+# Architecture diagram generation (generate_arch.py)
+dev = [
+    "matplotlib>=3.8.0",
+]
+
+# Everything
+all = [
+    "pikaia[lancedb]",
+    "pikaia[deepseek]",
+    "pikaia[dev]",
+]
+
+[project.scripts]
+pikaia = "Pikaia.main:main"
+
+[project.urls]
+Homepage = "https://github.com/zacharylyj/Pikaia"
+Repository = "https://github.com/zacharylyj/Pikaia"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends.legacy:build"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["Pikaia*"]
+
+[tool.setuptools.package-data]
+"Pikaia" = [
+    "tools/tools.json",
+    "tools/providers/*.py",
+    "tools/impl/*.py",
+]

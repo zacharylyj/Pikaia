@@ -26,8 +26,27 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# Per-path locks for ct.json  — prevents concurrent read-modify-write races
+# among the multiple agent threads and the orchestrator thread that all share
+# the same process.  (For multi-process deployments, add portalocker or
+# replace with an advisory .lock sidecar file.)
+# ---------------------------------------------------------------------------
+_CT_LOCKS: dict[str, threading.Lock] = {}
+_CT_LOCKS_META = threading.Lock()
+
+
+def _get_ct_lock(path: Path) -> threading.Lock:
+    """Return the per-path Lock for a ct.json file; creates it on first use."""
+    key = str(path.resolve())
+    with _CT_LOCKS_META:
+        if key not in _CT_LOCKS:
+            _CT_LOCKS[key] = threading.Lock()
+        return _CT_LOCKS[key]
 
 
 def run(params: dict, context: dict) -> dict[str, Any]:
@@ -114,15 +133,20 @@ def _write_mt(base_path: Path, entry: dict, context: dict) -> None:
 def _write_ct(base_path: Path, project: str, entry: dict) -> None:
     path = base_path / "projects" / project / "ct.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    entries = _load_list(path)
-
-    existing_idx = next((i for i, e in enumerate(entries) if e.get("id") == entry.get("id")), None)
-    if existing_idx is not None:
-        entries[existing_idx] = entry
-    else:
-        entries.append(entry)
-
-    _save_json(path, entries)
+    # Hold the per-path lock for the entire read-modify-write cycle so that
+    # concurrent agent threads (and the orchestrator) cannot interleave their
+    # load → modify → save sequences and silently overwrite each other.
+    with _get_ct_lock(path):
+        entries = _load_list(path)
+        existing_idx = next(
+            (i for i, e in enumerate(entries) if e.get("id") == entry.get("id")),
+            None,
+        )
+        if existing_idx is not None:
+            entries[existing_idx] = entry
+        else:
+            entries.append(entry)
+        _save_json(path, entries)
 
 
 def _write_st(base_path: Path, project: str, instance_id: str, entry: dict) -> None:
