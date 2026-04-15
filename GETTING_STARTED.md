@@ -18,27 +18,62 @@ This guide covers installation, API key setup, first run, and basic configuratio
 
 ## 1. Clone and Install
 
+Pikaia has **zero required third-party packages** — all LLM providers use Python's stdlib `urllib.request`.
+
 ```bash
 git clone https://github.com/zacharylyj/Pikaia.git
 cd Pikaia
-pip install anthropic openai requests          # minimum dependencies
+python Pikaia/init.py     # first-run scaffold (no pip install needed for core)
 ```
 
-Optional dependencies:
+Install optional extras only for the features you need:
+
 ```bash
-pip install groq                               # Groq provider support
-# Install Ollama from https://ollama.com, then pull a model:
-ollama pull llama3.2
-# Install ripgrep for faster file search (grep/glob/list tools):
+# LanceDB — faster MT memory backend at scale (recommended for production)
+pip install ".[lancedb]"          # or: pip install lancedb pyarrow
+
+# DeepSeek-R1 fallback via HuggingFace (Ollama requires no Python deps)
+pip install ".[deepseek]"         # or: pip install transformers torch accelerate
+
+# Architecture diagram regeneration
+pip install ".[dev]"              # or: pip install matplotlib
+
+# Ripgrep — faster grep/glob/list tools (pure-Python fallback always available)
 # Windows: winget install BurntSushi.ripgrep.MSVC
 # macOS:   brew install ripgrep
 ```
 
+For Ollama (local models, free, no Python deps):
+```bash
+# Install from https://ollama.com, then pull a model:
+ollama pull llama3.2
+```
+
 ---
 
-## 2. Add API Keys
+## 2. Set API Keys
 
-Open `Pikaia/keys.json` and fill in whichever providers you have:
+Keys are resolved in priority order — **env vars are preferred**; `keys.json` is a local fallback.
+
+### Option A — Environment variables (recommended)
+
+```bash
+# Pikaia-specific overrides (highest priority)
+export PIKAIA_ANTHROPIC_KEY=sk-ant-...
+export PIKAIA_OPENAI_KEY=sk-...
+export PIKAIA_GROQ_KEY=gsk_...
+
+# Standard provider env vars also work (lower priority than PIKAIA_ prefix)
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+export GROQ_API_KEY=gsk_...
+```
+
+Use env vars for CI, Docker, or any environment where committing secrets is a risk.
+
+### Option B — `keys.json` (local development only)
+
+Create `Pikaia/keys.json` and fill in whichever providers you have:
 
 ```json
 {
@@ -49,16 +84,23 @@ Open `Pikaia/keys.json` and fill in whichever providers you have:
 }
 ```
 
+> **Never commit `keys.json`.** It is already listed in `.gitignore`.
+
 You only need the key(s) for the providers your configured pipelines use. The default `config.json` uses Anthropic models, so only `anthropic` is required out of the box.
 
 ### Multiple keys per provider (rotation)
 
-You can supply a list of keys for any provider. On rate-limit (429) or auth errors, Pikaia automatically rotates to the next key with per-key cooldown tracking:
+Supply a comma-separated env var **or** a JSON array for automatic round-robin rotation on 429/auth failures:
+
+```bash
+# Env var — comma-separated list
+export PIKAIA_ANTHROPIC_KEYS=sk-ant-key1,sk-ant-key2,sk-ant-key3
+```
 
 ```json
+# keys.json — array form
 {
-  "anthropic": ["sk-ant-key1...", "sk-ant-key2...", "sk-ant-key3..."],
-  "openai":    "sk-..."
+  "anthropic": ["sk-ant-key1...", "sk-ant-key2...", "sk-ant-key3..."]
 }
 ```
 
@@ -453,7 +495,7 @@ Approve by removing the CT flag or setting `"status": "done"`.
 ## 16. Troubleshooting
 
 ### `KeyError: 'anthropic'` during LLM call
-Your `keys.json` is missing the `anthropic` key. Add it or switch pipelines to a different provider.
+Key not found. Resolution order: `PIKAIA_ANTHROPIC_KEY` env var → `ANTHROPIC_API_KEY` env var → `keys.json`. Set one of the env vars or add the key to `keys.json`.
 
 ### Agent always fails ack validation
 Lower `ack_confidence_min` in `config.json` (try `0.65`) or increase `ack_max_rounds` to `3`.
@@ -471,7 +513,10 @@ Run with UTF-8 encoding: `set PYTHONIOENCODING=utf-8` before `python main.py`.
 Run `python init.py --test --tool <name>` to isolate the failing tool. Use `--fast` to skip network-dependent tests.
 
 ### Rate limits
-Add multiple API keys as a JSON array in `keys.json` (see Section 2). The `_KeyPool` rotates keys automatically with per-key cooldown.
+Set `PIKAIA_ANTHROPIC_KEYS=key1,key2,key3` (env var, comma-separated) or list keys as a JSON array in `keys.json`. The `_KeyPool` rotates automatically with per-key cooldown.
+
+### Recovering a corrupted `mt.json`
+Every MT write appends a pre-AAAK copy of the entry to `memory/mt_raw.jsonl` before any transformation. To rebuild: stream the JSONL file, re-run `MTWriter.write()` on each line, or inspect it directly with `python -m json.tool` line-by-line.
 
 ---
 
@@ -481,13 +526,16 @@ Add multiple API keys as a JSON array in `keys.json` (see Section 2). The `_KeyP
 |------|---------|
 | `Pikaia/config.json` | Models, thresholds, pipeline assignments, agent loop tuning |
 | `Pikaia/models.json` | Registered LLM providers and capabilities |
-| `Pikaia/keys.json` | API keys — single string or list per provider (never commit this) |
+| `Pikaia/keys.json` | API keys — optional fallback; prefer env vars; **never commit** |
 | `Pikaia/preferences.json` | User preferences injected into every context |
 | `Pikaia/skills/` | Versioned skill templates |
 | `Pikaia/memory/lt.json` | Long-term memory (persistent across sessions) |
 | `Pikaia/memory/mt.json` | Medium-term memory (MemPalace format) |
-| `Pikaia/memory/kg.json` | Knowledge graph (entity relationships) |
+| `Pikaia/memory/mt_raw.jsonl` | Pre-AAAK recovery log — append-only, gitignored |
+| `Pikaia/memory/kg.json` | Knowledge graph (temporal triples, subject-indexed) |
 | `Pikaia/pikaia.db` | SQLite observability store (trajectories, metrics, tool events) |
+| `requirements.txt` | Optional dep groups (lancedb, deepseek, dev) with comments |
+| `pyproject.toml` | Package metadata + optional dep groups for `pip install ".[group]"` |
 
 ---
 

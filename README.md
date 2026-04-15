@@ -20,12 +20,13 @@ Pikaia/
 ├── test_tools.py            # Functional tool test suite (55 tests, no API key needed)
 ├── config.json              # Global config (models, thresholds, pipelines, budgets)
 ├── models.json              # Supported LLM registry
-├── keys.json                # API keys (not committed)
+├── keys.json                # API keys — optional fallback (prefer env vars; never commit)
 ├── skills/                  # Skill templates (versioned JSON + markdown)
 ├── memory/                  # Persistent memory files
 │   ├── lt.json              #   Long-term memory
 │   ├── mt.json              #   Medium-term memory (MemPalace format)
-│   └── kg.json              #   Knowledge Graph (temporal triple store)
+│   ├── mt_raw.jsonl         #   Pre-AAAK raw log (append-only recovery store, gitignored)
+│   └── kg.json              #   Knowledge Graph (temporal triple store, subject-indexed)
 ├── projects/                # Per-project workspaces
 │   └── <project>/
 │       ├── ct.json          #   Concurrent tasks / open flags
@@ -163,8 +164,17 @@ Independent tool calls (reads) execute concurrently via `ThreadPoolExecutor`. Wr
 ### Model Routing
 Short/simple tasks (≤50 words, ≤1 tool) are automatically routed to `config.fast_model` (`claude-haiku` by default) to cut cost. Override per task via `task_packet["fast_model"]`.
 
-### API Key Rotation
-`keys.json` may list multiple keys per provider as an array. A `_KeyPool` round-robins keys on 429/auth failures with per-key cooldown tracking.
+### API Key Resolution
+
+Keys are resolved in this priority order (first non-empty value wins):
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 | `PIKAIA_<PROVIDER>_KEY` env var | `PIKAIA_ANTHROPIC_KEY=sk-ant-…` |
+| 2 | Standard provider env var | `ANTHROPIC_API_KEY=sk-ant-…` |
+| 3 | `keys.json` file | `{"anthropic": "sk-ant-…"}` |
+
+`keys.json` is an optional fallback — CI/production deployments should use env vars only and never create the file. For key rotation, set `PIKAIA_<PROVIDER>_KEYS` to a comma-separated list: `PIKAIA_ANTHROPIC_KEYS=key1,key2,key3`. `_KeyPool` round-robins the pool on 429/auth failures with per-key cooldown tracking.
 
 ---
 
@@ -182,19 +192,26 @@ Pikaia uses **five memory layers** that serve different timescales and purposes.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### MT — Medium-Term Memory (MemPalace)
+### MT — Medium-Term Memory (MemPalace v2)
 
-Every MT entry is enriched by `mt_palace.py` before storage:
+Every MT entry passes through `MTWriter.write()` before storage:
 
 ```
 Plain text entry
     │
-    ├── RoomDetector    → tags entry with wing + room
-    ├── EntityExtractor → extracts persons, projects, code identifiers
-    ├── AAAKCodec       → lossy compression (~30× smaller, human-readable)
-    ├── ImportanceScorer → 0–1 importance score
-    └── KnowledgeGraph  → registers entities as temporal triples
+    ├── _append_raw_log  → appends original entry to mt_raw.jsonl (recovery store)
+    ├── _sanitize        → strips shell substitution patterns, truncates to 8 000 chars
+    ├── _embed           → vector embedding (module-level cache — one load per process)
+    ├── RoomDetector     → tags entry with wing + room + hall
+    ├── EntityExtractor  → extracts persons, projects, code identifiers
+    ├── AAAKCodec        → lossy compression (~30× smaller, human-readable)
+    ├── ImportanceScorer → 0–1 importance score with recency decay
+    ├── Dedup gate       → cosine-checks recent same-wing entries (threshold 0.92)
+    └── KnowledgeGraph   → registers entities; subject+predicate indexed for O(k) lookup
 ```
+
+**`mt_raw.jsonl` — AAAK recovery log:**
+Before any transformation, the original entry (minus the embedding vector) is appended to `memory/mt_raw.jsonl` (JSON-Lines, append-only). If the AAAK format ever changes or `mt.json` is corrupted, this log can rebuild the store. Thread-safe via `_RAW_LOG_LOCK`. Gitignored.
 
 **Wing / Room hierarchy:**
 
@@ -389,7 +406,7 @@ python examples/deepseek_local.py  # standalone chat example
 | `fast_model_threshold_tools` | `1` | Route to fast_model if tools ≤ N |
 | `loop_awareness_injection` | `true` | Inject step budget + tool history each turn |
 | `tool_dependency_detection` | `true` | Classify calls as parallel-safe or sequential |
-| `key_rotation_enabled` | `true` | Rotate API keys on 429/auth failures |
+| `key_rotation_enabled` | `true` | Rotate API keys on 429/auth failures (pool via env var or keys.json array) |
 | `deepseek_fallback_enabled` | `true` | Fall back to DeepSeek-R1 1.5B locally when all primary retries fail |
 
 ### Observability
@@ -415,6 +432,30 @@ Draft skill (sonnet)
          ├── yes → write to skills/, set CT approval flag
          └── no  → mark as low-confidence, still write (human reviews CT)
 ```
+
+---
+
+## Installation
+
+Pikaia has **zero required third-party packages** for its core operation. All LLM providers communicate via Python's stdlib `urllib.request` — no SDK needs to be installed.
+
+```bash
+git clone https://github.com/zacharylyj/Pikaia.git
+cd Pikaia
+python Pikaia/init.py           # scaffold directories + validate config
+python Pikaia/main.py           # start CLI (needs ANTHROPIC_API_KEY or keys.json)
+```
+
+Optional dependencies are declared in `pyproject.toml` as groups:
+
+```bash
+pip install ".[lancedb]"    # LanceDB vector backend — faster MT memory at scale
+pip install ".[deepseek]"   # HuggingFace transformers — DeepSeek-R1 fallback without Ollama
+pip install ".[dev]"        # matplotlib — regenerate architecture_map.png
+pip install ".[all]"        # all of the above
+```
+
+Or install flat from `requirements.txt` by uncommenting the groups you need.
 
 ---
 
