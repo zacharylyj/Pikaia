@@ -88,6 +88,18 @@
     "enabled":        true
   },
   {
+    "model_id":       "deepseek-r1:1.5b",
+    "provider":       "deepseek_local",
+    "call_format":    "messages",
+    "strengths":      ["local", "private", "no API cost", "chain-of-thought reasoning", "1.5B runs on CPU"],
+    "weaknesses":     ["slower than API models", "no native tool-use (text injection)", "reasoning trace adds tokens"],
+    "context_window": 65536,
+    "cost_tier":      "free",
+    "speed_tier":     "variable",
+    "notes":          "Requires: (A) ollama pull deepseek-r1:1.5b, or (B) pip install transformers torch accelerate",
+    "enabled":        true
+  },
+  {
     "model_id":       "debug-model",
     "provider":       "debug",
     "call_format":    "messages",

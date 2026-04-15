@@ -142,6 +142,10 @@ _OLLAMA_PIPELINES: dict[str, str] = {
     k: "llama3.2" for k in _GROQ_PIPELINES
 }
 
+_DEEPSEEK_PIPELINES: dict[str, str] = {
+    k: "deepseek-r1:1.5b" for k in _GROQ_PIPELINES
+}
+
 
 def _patch_pipelines(cfg: OrchestratorConfig, registry: ToolRegistry,
                      overrides: dict[str, str]) -> None:
@@ -152,9 +156,10 @@ def _patch_pipelines(cfg: OrchestratorConfig, registry: ToolRegistry,
 
 
 def _make_orchestrator(project: str, instance_id: str,
-                        debug: bool = False,
-                        groq:  bool = False,
-                        ollama: bool = False) -> tuple[Orchestrator, ToolRegistry]:
+                        debug:     bool = False,
+                        groq:      bool = False,
+                        ollama:    bool = False,
+                        deepseek:  bool = False) -> tuple[Orchestrator, ToolRegistry]:
     cfg = OrchestratorConfig.from_json(
         str(_BASE_PATH / "config.json"),
         str(_project_path(project, "config.json")),
@@ -173,6 +178,8 @@ def _make_orchestrator(project: str, instance_id: str,
         _patch_pipelines(cfg, registry, _GROQ_PIPELINES)
     elif ollama:
         _patch_pipelines(cfg, registry, _OLLAMA_PIPELINES)
+    elif deepseek:
+        _patch_pipelines(cfg, registry, _DEEPSEEK_PIPELINES)
 
     tools = Tools(dispatch=registry.dispatch)
     orch  = Orchestrator(
@@ -426,8 +433,9 @@ Session = tuple[str, str, Orchestrator, ToolRegistry]
 # Set by main() before the REPL starts; read by _dispatch_command when
 # spawning a new orchestrator on /project or /new project.
 _DEBUG_MODE:  bool = False
-_GROQ_MODE:   bool = False
-_OLLAMA_MODE: bool = False
+_GROQ_MODE:      bool = False
+_OLLAMA_MODE:    bool = False
+_DEEPSEEK_MODE:  bool = False
 
 
 def _dispatch_command(line: str, project: str, instance_id: str,
@@ -467,7 +475,7 @@ def _dispatch_command(line: str, project: str, instance_id: str,
             new_proj = args[0]
             _ensure_project(new_proj)
             new_inst = _create_or_resume(new_proj, None)
-            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE)
+            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE, deepseek=_DEEPSEEK_MODE)
             print(f"Switched to project '{new_proj}'  instance: {new_inst}")
             return (new_proj, new_inst, new_orch, new_reg), False
     elif cmd == "/new":
@@ -475,7 +483,7 @@ def _dispatch_command(line: str, project: str, instance_id: str,
             new_proj = args[1]
             _ensure_project(new_proj)
             new_inst = _create_or_resume(new_proj, None)
-            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE)
+            new_orch, new_reg = _make_orchestrator(new_proj, new_inst, debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE, deepseek=_DEEPSEEK_MODE)
             print(f"Created project '{new_proj}'  instance: {new_inst}")
             return (new_proj, new_inst, new_orch, new_reg), False
         else:
@@ -498,7 +506,7 @@ _BANNER = """
 
 
 def main() -> None:
-    global _DEBUG_MODE, _GROQ_MODE, _OLLAMA_MODE
+    global _DEBUG_MODE, _GROQ_MODE, _OLLAMA_MODE, _DEEPSEEK_MODE
 
     parser = argparse.ArgumentParser(description="AGENT — AI agent orchestration framework")
     parser.add_argument("--project",  default="default", metavar="NAME",
@@ -509,14 +517,17 @@ def main() -> None:
                         help="Mock LLM adapter — no API keys, canned responses")
     parser.add_argument("--groq",     action="store_true",
                         help="Use Groq free-tier API (needs 'groq' key in keys.json)")
-    parser.add_argument("--ollama",   action="store_true",
+    parser.add_argument("--ollama",    action="store_true",
                         help="Use local Ollama (needs Ollama running on localhost:11434)")
+    parser.add_argument("--deepseek",  action="store_true",
+                        help="Run DeepSeek-R1 1.5B locally via Ollama or transformers (free, no key)")
     args = parser.parse_args()
 
-    project      = args.project
-    _DEBUG_MODE  = args.debug
-    _GROQ_MODE   = args.groq   and not args.debug
-    _OLLAMA_MODE = args.ollama and not args.debug and not args.groq
+    project        = args.project
+    _DEBUG_MODE    = args.debug
+    _GROQ_MODE     = args.groq      and not args.debug
+    _OLLAMA_MODE   = args.ollama    and not args.debug and not args.groq
+    _DEEPSEEK_MODE = args.deepseek  and not args.debug and not args.groq and not args.ollama
 
     # First-run: auto-scaffold if projects/ doesn't exist
     if not (_BASE_PATH / "projects").exists():
@@ -529,7 +540,8 @@ def main() -> None:
     _ensure_project(project)
     instance_id = _create_or_resume(project, args.instance)
     orch, reg   = _make_orchestrator(project, instance_id,
-                                     debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE)
+                                     debug=_DEBUG_MODE, groq=_GROQ_MODE, ollama=_OLLAMA_MODE,
+                                     deepseek=_DEEPSEEK_MODE)
 
     print(_BANNER)
     print(f"  Project  : {_fmt(project, 'cyan')}")
@@ -540,7 +552,9 @@ def main() -> None:
     elif _GROQ_MODE:
         print(f"  Mode     : {_fmt('GROQ   (free tier — llama-3.1-8b / llama-3.3-70b)', 'green')}")
     elif _OLLAMA_MODE:
-        print(f"  Mode     : {_fmt('OLLAMA (local — llama3.2 on localhost:11434)', 'green')}")
+        print(f"  Mode     : {_fmt('OLLAMA    (local — llama3.2 on localhost:11434)', 'green')}")
+    elif _DEEPSEEK_MODE:
+        print(f"  Mode     : {_fmt('DEEPSEEK  (local — deepseek-r1:1.5b, Ollama or transformers)', 'cyan')}")
     print(f"\n  Type {_fmt('/help', 'bold')} for commands or {_fmt('/exit', 'bold')} to quit.\n")
 
     # Enable readline on platforms that support it
