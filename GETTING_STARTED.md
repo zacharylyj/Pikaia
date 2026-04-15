@@ -136,6 +136,7 @@ python main.py --project myproject     # explicit project workspace
 python main.py --instance <id>         # resume an existing session
 python main.py --groq                  # use Groq free-tier API
 python main.py --ollama                # use local Ollama models
+python main.py --deepseek              # only use DeepSeek-R1 1.5B locally (free, no key)
 python main.py --debug                 # mock LLM calls (no API key needed)
 ```
 
@@ -206,6 +207,34 @@ python main.py --ollama
 ```
 
 Requires Ollama running (`ollama serve`) with a model pulled (`ollama pull llama3.2`). Routes all pipelines to the local model. Tool-use falls back to text injection mode.
+
+### DeepSeek-R1 1.5B (local, no key, CPU-capable)
+
+```bash
+# Step 1 — pick one backend:
+ollama pull deepseek-r1:1.5b          # Option A: Ollama (~600 MB RAM, fast)
+pip install transformers torch accelerate  # Option B: HuggingFace (no Ollama needed)
+
+# Step 2 — run
+python main.py --deepseek
+```
+
+`--deepseek` routes **all** pipelines through `deepseek-r1:1.5b`. Ollama is tried first; if not running, it falls back to the `transformers` library automatically. No API key required.
+
+DeepSeek R1 outputs chain-of-thought reasoning wrapped in `<think>…</think>` tokens. The provider strips these from the agent's context (keeping answers clean) but preserves them in `response["thinking"]` for inspection.
+
+**Standalone example** (no orchestration stack needed):
+```bash
+python examples/deepseek_local.py --show-thinking   # chat + see reasoning trace
+python examples/deepseek_local.py --prompt "Explain recursion"
+python examples/deepseek_local.py --backend transformers
+```
+
+### Automatic fallback to DeepSeek
+
+Even without `--deepseek`, Pikaia will **automatically try DeepSeek-R1 1.5B locally** before giving up if the primary cloud provider fails (rate-limit exhausted, all API keys invalid, or network error). This happens transparently — the agent recovers and continues the task.
+
+To disable: set `"deepseek_fallback_enabled": false` in `config.json`.
 
 ### Debug mode (no API key needed)
 

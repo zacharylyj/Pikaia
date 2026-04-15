@@ -48,7 +48,8 @@ Pikaia/
     │   ├── anthropic.py
     │   ├── openai.py
     │   ├── groq.py
-    │   └── ollama.py
+    │   ├── ollama.py
+    │   └── deepseek_local.py  # DeepSeek-R1 1.5B via Ollama or transformers (free, no key)
     └── impl/                # Tool implementations (26 tools)
 ```
 
@@ -339,8 +340,25 @@ Thread-safe via `get_db(path)` singleton + lock.
 | `gpt-4o` | OpenAI | 128k | medium | general, multimodal |
 | `gpt-4o-mini` | OpenAI | 128k | fast | simple tasks |
 | `llama3.2` | Ollama | 128k | local | private, no-cost |
+| `deepseek-r1:1.5b` | deepseek_local | 64k | local | free, no key, CPU-capable, fallback |
+| `llama-3.3-70b-versatile` | Groq | 128k | fast | free tier, strong reasoning |
+| `llama-3.1-8b-instant` | Groq | 128k | instant | free tier, classification, fast tasks |
 
 Pipeline → model mapping is in `config.json` under `"pipelines"`.
+
+### Running DeepSeek locally
+
+```bash
+# Option A — Ollama (recommended, ~600 MB RAM)
+ollama pull deepseek-r1:1.5b
+python main.py --deepseek          # route all pipelines through DeepSeek
+
+# Option B — HuggingFace transformers (no Ollama needed)
+pip install transformers torch accelerate
+python examples/deepseek_local.py  # standalone chat example
+```
+
+`--deepseek` routes every pipeline to `deepseek-r1:1.5b`. When `--deepseek` is not set, DeepSeek is used automatically as a **last-resort fallback** if the primary cloud provider fails (rate-limit, auth, or network error) — see `deepseek_fallback_enabled` in the config reference below.
 
 ---
 
@@ -372,6 +390,7 @@ Pipeline → model mapping is in `config.json` under `"pipelines"`.
 | `loop_awareness_injection` | `true` | Inject step budget + tool history each turn |
 | `tool_dependency_detection` | `true` | Classify calls as parallel-safe or sequential |
 | `key_rotation_enabled` | `true` | Rotate API keys on 429/auth failures |
+| `deepseek_fallback_enabled` | `true` | Fall back to DeepSeek-R1 1.5B locally when all primary retries fail |
 
 ### Observability
 
