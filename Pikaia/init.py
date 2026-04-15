@@ -97,6 +97,14 @@ DEFAULT_CONFIG = {
     # Orchestrator may override strategy via task_packet["tool_exec_strategy"].
     "tool_dependency_detection":     True,
 
+    # DeepSeek-R1 1.5B local fallback: when the primary LLM provider fails
+    # (rate-limit, auth error, network error) after all retries and key rotations,
+    # automatically attempt one more call using deepseek-r1:1.5b locally via
+    # Ollama (or transformers). Skipped automatically when the pipeline is
+    # already using deepseek_local as the primary provider.
+    # Requires: `ollama pull deepseek-r1:1.5b`  OR  `pip install transformers torch`
+    "deepseek_fallback_enabled":     True,
+
     "pipelines": {
         "orchestration":     "claude-sonnet-4-6",
         "task_planning":     "claude-sonnet-4-6",

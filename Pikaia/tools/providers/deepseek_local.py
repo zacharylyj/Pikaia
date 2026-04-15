@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -76,41 +77,48 @@ def _extract_thinking(text: str) -> tuple[str, str]:
 class _TransformersBackend:
     """HuggingFace transformers inference.  Loaded once, reused across calls."""
 
-    _pipe: Any = None
+    _pipe:  Any             = None
+    _lock:  threading.Lock  = threading.Lock()  # guards one-time model load
 
     @classmethod
     def available(cls) -> bool:
+        """Return True only if both transformers AND torch are importable."""
         try:
             import transformers  # noqa: F401
+            import torch          # noqa: F401
             return True
         except ImportError:
             return False
 
     @classmethod
     def load(cls) -> Any:
-        if cls._pipe is not None:
+        """Load the pipeline exactly once; thread-safe via double-checked locking."""
+        if cls._pipe is not None:          # fast path — no lock needed
             return cls._pipe
-        from transformers import pipeline as hf_pipeline  # type: ignore[import]
-        try:
-            import torch
-            device = 0 if torch.cuda.is_available() else -1          # 0=GPU, -1=CPU
-            dtype  = "auto" if torch.cuda.is_available() else None
-        except ImportError:
-            device = -1
-            dtype  = None
+        with cls._lock:
+            if cls._pipe is not None:      # re-check inside lock
+                return cls._pipe
+            from transformers import pipeline as hf_pipeline  # type: ignore[import]
+            try:
+                import torch
+                device = 0 if torch.cuda.is_available() else -1   # 0=GPU, -1=CPU
+                dtype  = "auto" if torch.cuda.is_available() else None
+            except ImportError:
+                device = -1
+                dtype  = None
 
-        logger.info("Loading %s via transformers (device=%s)…", HF_MODEL_ID, device)
-        kwargs: dict[str, Any] = dict(
-            task              = "text-generation",
-            model             = HF_MODEL_ID,
-            device            = device,
-            trust_remote_code = True,
-        )
-        if dtype:
-            kwargs["torch_dtype"] = dtype
-        cls._pipe = hf_pipeline(**kwargs)
-        logger.info("DeepSeek-R1 1.5B loaded.")
-        return cls._pipe
+            logger.info("Loading %s via transformers (device=%s)…", HF_MODEL_ID, device)
+            kwargs: dict[str, Any] = dict(
+                task              = "text-generation",
+                model             = HF_MODEL_ID,
+                device            = device,
+                trust_remote_code = True,
+            )
+            if dtype:
+                kwargs["torch_dtype"] = dtype
+            cls._pipe = hf_pipeline(**kwargs)
+            logger.info("DeepSeek-R1 1.5B loaded.")
+            return cls._pipe
 
     @classmethod
     def generate(cls, messages: list[dict], max_tokens: int = 1024) -> dict[str, Any]:
