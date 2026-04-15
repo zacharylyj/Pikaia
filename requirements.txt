@@ -1,0 +1,35 @@
+# Pikaia — dependency manifest
+# ============================================================
+# CORE: zero required third-party packages.
+# All LLM providers use Python's stdlib urllib.request — no SDK
+# needs to be installed to run Pikaia with any provider.
+#
+# Install optional groups based on the features you use:
+#
+#   pip install -r requirements.txt          # core only (no extras)
+#   pip install -r requirements-lancedb.txt  # fast vector MT backend
+#   pip install -r requirements-deepseek.txt # local DeepSeek-R1 1.5B
+#   pip install -r requirements-dev.txt      # diagrams + tooling
+#
+# Or use pyproject.toml optional groups:
+#
+#   pip install ".[lancedb]"
+#   pip install ".[deepseek]"
+#   pip install ".[all]"
+# ============================================================
+
+# ── LanceDB vector backend (recommended for production MT memory) ────────────
+# Replaces the O(n) JSON cosine scan with a columnar vector index.
+# lancedb>=0.6.0
+# pyarrow>=14.0.0
+
+# ── DeepSeek-R1 1.5B via HuggingFace transformers ───────────────────────────
+# Only needed if you want the transformers fallback when Ollama is unavailable.
+# Ollama (ollama.com) works with zero Python deps.
+# transformers>=4.40.0
+# torch>=2.2.0
+# accelerate>=0.30.0
+
+# ── Architecture diagram ─────────────────────────────────────────────────────
+# Required only to regenerate architecture_map.png via generate_arch.py.
+# matplotlib>=3.8.0

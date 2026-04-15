@@ -116,7 +116,23 @@ class _KeyPool:
 
 
 def _build_key_pool(provider: str, base_path: Path) -> _KeyPool | None:
-    """Load keys.json and return a _KeyPool if multiple keys exist."""
+    """Load a pool of rotation keys from env vars or keys.json.
+
+    Env var  PIKAIA_<PROVIDER>_KEYS  (comma-separated) takes priority, e.g.::
+
+        PIKAIA_ANTHROPIC_KEYS=sk-ant-key1,sk-ant-key2,sk-ant-key3
+
+    Falls back to a list entry in keys.json when the env var is absent.
+    Returns None (no rotation) when only a single key is available.
+    """
+    import os as _os
+    env_var = f"PIKAIA_{provider.upper()}_KEYS"
+    env_val = _os.environ.get(env_var, "").strip()
+    if env_val:
+        pool_keys = [k.strip() for k in env_val.split(",") if k.strip()]
+        if len(pool_keys) > 1:
+            return _KeyPool(pool_keys)
+
     keys_path = base_path / "keys.json"
     if not keys_path.exists():
         return None
@@ -159,17 +175,41 @@ def _load_adapter(pipeline: str, base_path: Path, api_key: str | None = None) ->
     provider_name = model_entry["provider"]
 
     if api_key is None:
-        keys: dict = {}
-        keys_path = base_path / "keys.json"
-        if keys_path.exists():
-            try:
-                raw_keys = json.loads(keys_path.read_text())
-                for k, v in raw_keys.items():
-                    # Support both single key (str) and list-of-keys
-                    keys[k] = v[0] if isinstance(v, list) else v
-            except Exception:
-                pass
-        api_key = keys.get(provider_name)
+        # Resolution order (first non-empty value wins):
+        #   1. PIKAIA_<PROVIDER>_KEY  — Pikaia-specific override
+        #   2. Standard well-known env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY, …)
+        #   3. keys.json  — file-based fallback (never commit this file)
+        import os as _os
+        _WELL_KNOWN: dict[str, list[str]] = {
+            "anthropic":      ["ANTHROPIC_API_KEY"],
+            "openai":         ["OPENAI_API_KEY"],
+            "groq":           ["GROQ_API_KEY"],
+            "ollama":         [],
+            "deepseek_local": [],
+            "debug":          [],
+        }
+        candidates = (
+            [f"PIKAIA_{provider_name.upper()}_KEY"]
+            + _WELL_KNOWN.get(provider_name, [f"PIKAIA_{provider_name.upper()}_KEY"])
+        )
+        for var in candidates:
+            val = _os.environ.get(var, "").strip()
+            if val:
+                api_key = val
+                break
+
+        if not api_key:
+            keys: dict = {}
+            keys_path = base_path / "keys.json"
+            if keys_path.exists():
+                try:
+                    raw_keys = json.loads(keys_path.read_text())
+                    for k, v in raw_keys.items():
+                        # Support both single key (str) and list-of-keys
+                        keys[k] = v[0] if isinstance(v, list) else v
+                except Exception:
+                    pass
+            api_key = keys.get(provider_name)
 
     provider_file = base_path / "tools" / "providers" / f"{provider_name}.py"
     if not provider_file.exists():

@@ -129,9 +129,9 @@ main.py  ──creates──►  Orchestrator.py  ──spawns thread──►  
 | `_KeyPool` | `keys: list[str]` | — | Round-robin key rotation with per-key cooldown tracking |
 | `_KeyPool.get()` | — | `str \| None` | Returns next available key; skips keys on cooldown |
 | `_KeyPool.mark_failed(key, cooldown_secs)` | `str, float` | — | Puts key on cooldown after 429/auth error |
-| `_build_key_pool(provider, base_path)` | `str, Path` | `_KeyPool` | Reads `keys.json`, handles single string or list |
+| `_build_key_pool(provider, base_path)` | `str, Path` | `_KeyPool \| None` | Key rotation pool: `PIKAIA_<PROVIDER>_KEYS` env var (comma-sep) → `keys.json` list; `None` if single key |
 | `_should_use_fast_model(task_packet, config)` | `dict, dict` | `bool` | True if prompt ≤ N words AND tools ≤ N |
-| `_load_adapter(pipeline, base_path, api_key?)` | `str, Path, str\|None` | `(Adapter, model_id, provider_name)` | Loads provider from `models.json`/`keys.json` |
+| `_load_adapter(pipeline, base_path, api_key?)` | `str, Path, str\|None` | `(Adapter, model_id, provider_name)` | Key resolution: `PIKAIA_<PROVIDER>_KEY` → standard env var → `keys.json`; loads provider adapter |
 
 #### BaseAgent
 
@@ -276,27 +276,41 @@ metrics       — task_id, name, value, ts
 ---
 
 ### `mt_palace.py`
-**Role:** MemPalace MT storage/retrieval engine. Wing/Room tagging, AAAK compression, KG triple store, 4-layer retrieval.
+**Role:** MemPalace MT storage/retrieval engine. Wing/Room/Hall tagging, AAAK compression, KG triple store, 4-layer retrieval, raw log, KG subject index.
 
 | Class / Function | In | Out | Role |
 |---|---|---|---|
 | `RoomDetector.detect(text)` | `str` | `(wing, room)` | Keyword → wing/room taxonomy |
+| `HallDetector.detect(text)` | `str` | `str` hall | Memory-type corridor: facts/events/decisions/advice/issues |
 | `EntityExtractor.extract(text)` | `str` | `{persons, projects}` | Regex-based entity detection |
 | `AAAKCodec.compress(entry, entities, room, existing_codes)` | `dict, dict, str, set` | `dict` compressed entry | AAAK lossy compression |
-| `ImportanceScorer.score(entry)` | `dict` | `float` 0–1 | Multi-signal importance scoring |
-| `KnowledgeGraph.add_triple(subject, predicate, object, ...)` | strings | `dict` | Append temporal triple to `kg.json` |
-| `KnowledgeGraph.query(subject?, predicate?, object?, as_of?)` | optional filters | `list[dict]` | Temporal triple query |
-| `KnowledgeGraph.subject_timeline(subject)` | `str` | `list[dict]` | Full history for a subject |
-| `MTWriter.write(entry, context)` | `dict, dict` | `dict` stored entry | Full MT write pipeline: room tagging → AAAK → KG → `mt.json` |
-| `MTReader.read(query, top_k, context, wing?, room?, palace_layer?)` | query+filters | `list[dict]` | L1/L2/L3 retrieval from `mt.json` |
+| `ImportanceScorer.score(entry, config?)` | `dict, dict` | `float` 0–1 | Multi-signal importance + recency decay (CORE entries exempt) |
+| `_append_raw_log(entry, base_path)` | `dict, Path` | — | Appends pre-AAAK raw entry (no embedding) to `mt_raw.jsonl`; thread-safe via `_RAW_LOG_LOCK` |
+| `KnowledgeGraph.__init__(kg_path)` | `Path` | — | Initialises `_subj_idx` + `_pred_idx` (populated lazily on first load) |
+| `KnowledgeGraph._load_cached()` | — | `dict` | Returns in-memory data; loads + indexes from disk on first call |
+| `KnowledgeGraph._rebuild_index()` | — | — | Builds `_subj_idx: dict[str, list[int]]` and `_pred_idx: dict[tuple, list[int]]` |
+| `KnowledgeGraph._invalidate_cache()` | — | — | Drops cache after every write so next read reloads fresh |
+| `KnowledgeGraph.add(subject, predicate, obj, ...)` | strings | `str` id | Contradiction detection via `_pred_idx` (O(k)); appends triple; saves + invalidates cache |
+| `KnowledgeGraph.query(subject?, predicate?, obj?, as_of?)` | optional filters | `list[dict]` | Index-accelerated: O(k) when subject given, O(n) for unfiltered |
+| `KnowledgeGraph.invalidate(subject, predicate, obj)` | strings | `int` count | Uses `_pred_idx` for O(k) invalidation |
+| `KnowledgeGraph.timeline(subject)` | `str` | `list[dict]` | Full history for a subject (sorted by valid_from) |
+| `MTWriter.write(entry, base_path, context)` | `dict, Path, dict` | `dict` stored entry | Pipeline: raw-log → sanitize → embed → enrich → dedup → save |
+| `MTWriter.prune(base_path, config?)` | `Path, dict` | `{archived, inspected}` | Archives low-importance old entries (CORE exempt) |
+| `MTReader.read(query, top_k, context, wing?, room?, palace_layer?)` | query+filters | `list[dict]` | L0/L1/L2/L3 retrieval with hall + tunnel expansion |
 | `kg_read(params, base_path)` | filter params | `list[dict]` | Entry point for `memory_read` tool KG layer |
 | `kg_write(params, base_path)` | triple data | `dict` | Entry point for `memory_write` tool KG layer |
 
+**Module-level caches / locks:**
+- `_BACKEND_CACHE` — MT storage backend singleton per base_path
+- `_EMBED_MOD_CACHE` — embed_text module singleton per base_path
+- `_RAW_LOG_LOCK: threading.Lock` — serialises concurrent `mt_raw.jsonl` appends
+
 **Memory files:**
 ```
-memory/mt.json   list[MTEntry]  — MemPalace entries with embedding + palace fields
-memory/kg.json   list[Triple]   — {id, subject, predicate, object, valid_from, valid_to}
-memory/lt.json   list[LTEntry]  — permanent preferences/facts
+memory/mt.json      list[MTEntry]   — MemPalace entries with embedding + palace fields
+memory/mt_raw.jsonl JSON-Lines      — pre-AAAK raw log (append-only, gitignored)
+memory/kg.json      list[Triple]    — {id, subject, predicate, object, valid_from, valid_to}
+memory/lt.json      list[LTEntry]   — permanent preferences/facts
 ```
 
 ---
@@ -484,7 +498,7 @@ All expose `run(params: dict, context: dict) -> dict`. All results wrapped in `T
 | Tool | Params in | Returns | Notes |
 |---|---|---|---|
 | `memory_read` | `layer, query?, top_k?, project?, instance_id?, wing?, room?, palace_layer?, subject?, predicate?, object?, as_of?, subject_timeline?` | `list[dict]` or `dict` (ST) | MemPalace / KG layers fully supported |
-| `memory_write` | `layer, entry, project?, instance_id?` | `{written, layer}` | Orchestrator only |
+| `memory_write` | `layer, entry, project?, instance_id?` | `{written, layer}` | Orchestrator only; `ct` layer uses per-path `threading.Lock` for safe concurrent read-modify-write |
 | `context_fetch` | `query, top_k?, include_files?, max_chars_per_file?` | `{text, mt_entries, files}` | `context_manager.ContextManager.fetch` |
 
 ### LLM & Skill Tools
@@ -513,17 +527,27 @@ All expose `run(params: dict, context: dict) -> dict`. All results wrapped in `T
 **`config.json` key additions (DeepSeek):**
 - `deepseek_fallback_enabled: bool` (default `true`) — when `true`, any primary-provider failure triggers a transparent retry via DeepSeek-R1 1.5B local before giving up; set `false` to disable
 
+**Key resolution order (agent.py `_load_adapter`):**
+1. `PIKAIA_<PROVIDER>_KEY` env var (Pikaia-specific override)
+2. Standard env var — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`
+3. `keys.json` file (local fallback only — never commit)
+
+**Key rotation pool:** set `PIKAIA_<PROVIDER>_KEYS=key1,key2,key3` (comma-separated env var) or `keys.json` array.
+
 ```
 Pikaia/
 ├── config.json          OrchestratorConfig fields (global defaults + agent loop tuning)
 ├── models.json          list[{model_id, provider, context_window, enabled, ...}]  — includes `deepseek-r1:1.5b` (provider: `deepseek_local`, cost_tier: `free`)
-├── keys.json            {provider_name: api_key_string | list[str]}
+├── keys.json            {provider_name: api_key_string | list[str]}  — optional; prefer env vars
+├── requirements.txt     Optional dep groups with comments (lancedb, deepseek, dev)
+├── pyproject.toml       Package metadata + optional dep groups; entry point `pikaia`
 ├── pikaia.db            SQLite WAL — trajectories, tool_events, metrics tables
 ├── tools/tools.json     list[{tool_id, impl, enabled, permissions:[...]}]
 ├── memory/
 │   ├── lt.json          list[{id, content, category, created_at}]
-│   ├── mt.json          list[MTEntry]  (+ palace fields: wing, room, importance, aaak_code, embedding)
-│   └── kg.json          list[{id, subject, predicate, object, valid_from, valid_to, confidence}]
+│   ├── mt.json          list[MTEntry]  (+ palace fields: wing, room, hall, importance, aaak_code, embedding)
+│   ├── mt_raw.jsonl     JSON-Lines append-only log — pre-AAAK raw entries (gitignored)
+│   └── kg.json          {triples: list[Triple], entities: dict}  — subject+pred indexed in memory
 ├── skills/
 │   ├── skills.json      list[{skill_id, name, tier, tools_required, template, embedding, active, version}]
 │   └── templates/       {skill_id}_v{n}.md  — prompt template files
@@ -595,8 +619,8 @@ tools/impl/memory_read.py
                                kg_read() for layer=kg
 
 tools/impl/memory_write.py
- └─► mt_palace.py             MTWriter.write() for layer=mt
-                               kg_write() for layer=kg
+ ├─► mt_palace.py             MTWriter.write() for layer=mt; kg_write() for layer=kg
+ └─► threading.Lock           per-path _CT_LOCKS dict serialises ct.json read-modify-write
 
 tools/impl/context_fetch.py
  └─► context_manager.py       ContextManager.fetch() (static method)
