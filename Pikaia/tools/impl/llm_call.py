@@ -116,17 +116,44 @@ def run(params: dict, context: dict) -> dict[str, Any]:
     adapter = mod.Adapter(api_key=api_key, model_id=model_id)
 
     # ------------------------------------------------------------------
-    # 5. Build + call
+    # 5. Build + call  (with DeepSeek-R1 local fallback on failure)
     # ------------------------------------------------------------------
-    request  = adapter.build_request(
+    request = adapter.build_request(
         system=system,
         messages=messages,
         max_tokens=max_tokens,
         temperature=temperature,
         tools=tools,
     )
-    raw      = adapter.call(request)
-    response = adapter.parse_response(raw)
+    try:
+        raw      = adapter.call(request)
+        response = adapter.parse_response(raw)
+    except Exception as primary_exc:
+        fallback_enabled = config.get("deepseek_fallback_enabled", True)
+        if fallback_enabled and provider_name != "deepseek_local":
+            logger.warning(
+                "llm_call: provider '%s' failed (%s) — trying DeepSeek-R1 local fallback",
+                provider_name, primary_exc,
+            )
+            try:
+                import sys as _sys2
+                _pikaia2 = str(base_path)
+                if _pikaia2 not in _sys2.path:
+                    _sys2.path.insert(0, _pikaia2)
+                from tools.providers.deepseek_local import Adapter as _DSAdapter  # type: ignore[import]
+                ds_adapter  = _DSAdapter(api_key=None, model_id="deepseek-r1:1.5b")
+                ds_request  = ds_adapter.build_request(
+                    system=system, messages=messages,
+                    max_tokens=max_tokens, temperature=temperature, tools=tools,
+                )
+                raw      = ds_adapter.call(ds_request)
+                response = ds_adapter.parse_response(raw)
+                logger.info("llm_call: DeepSeek fallback succeeded for pipeline '%s'", pipeline)
+            except Exception as ds_exc:
+                logger.error("llm_call: DeepSeek fallback also failed: %s", ds_exc)
+                raise primary_exc from None  # raise the original error
+        else:
+            raise
 
     # ------------------------------------------------------------------
     # 6. Token budget enforcement

@@ -39,8 +39,8 @@ main.py  ──creates──►  Orchestrator.py  ──spawns thread──►  
 
 | Function | In | Out | Connects to |
 |---|---|---|---|
-| `main()` | `--project`, `--instance`, `--debug`, `--groq`, `--ollama` CLI args | — (starts REPL) | `Orchestrator`, `ToolRegistry`, `OrchestratorConfig` |
-| `_make_orchestrator(project, instance_id, debug, groq, ollama)` | `str, str, bool, bool, bool` | `(Orchestrator, ToolRegistry)` | `Orchestrator.py`, `tools/registry.py`, `config.json` |
+| `main()` | `--project`, `--instance`, `--debug`, `--groq`, `--ollama`, `--deepseek` CLI args | — (starts REPL) | `Orchestrator`, `ToolRegistry`, `OrchestratorConfig` |
+| `_make_orchestrator(project, instance_id, debug, groq, ollama, deepseek)` | `str, str, bool, bool, bool, bool` | `(Orchestrator, ToolRegistry)` | `Orchestrator.py`, `tools/registry.py`, `config.json` |
 | `_ensure_project(project)` | `str` | — | `projects/{project}/` directory tree |
 | `_create_or_resume(project, instance_id)` | `str, str\|None` | `str` instance_id | `projects/{project}/instances/` |
 | `_dispatch_command(line, ...)` | `str` command line | `(Session, bool)` should_exit | all `_cmd_*` helpers |
@@ -53,10 +53,12 @@ main.py  ──creates──►  Orchestrator.py  ──spawns thread──►  
 - `--debug` — mock LLM calls, no API key needed
 - `--groq` — route all pipelines through Groq API
 - `--ollama` — route all pipelines through local Ollama
+- `--deepseek` — route all pipelines through DeepSeek-R1 1.5B (Ollama or transformers, no API key)
 
 **Key data types:**
 - `Session = tuple[str, str, Orchestrator, ToolRegistry]`
-- `_DEBUG_MODE`, `_GROQ_MODE`, `_OLLAMA_MODE` — module-level flags
+- `_DEBUG_MODE`, `_GROQ_MODE`, `_OLLAMA_MODE`, `_DEEPSEEK_MODE` — module-level flags
+- `_DEEPSEEK_PIPELINES: dict[str, str]` — maps all pipeline names → `"deepseek-r1:1.5b"`
 
 ---
 
@@ -136,6 +138,7 @@ main.py  ──creates──►  Orchestrator.py  ──spawns thread──►  
 | Method | In | Out | Connects to |
 |---|---|---|---|
 | `__init__(task_packet, record, base_path)` | `dict, dict, Path` | — | `ToolRegistry`, `_load_adapter`, `_build_key_pool`, `MetricsCollector`, `TrajectoryLogger` |
+| `_try_deepseek_fallback(system, messages, max_tokens, tool_schemas)` | `str, list, int, list\|None` | `dict \| None` | Lazy-loads `deepseek_local.Adapter`; calls it when primary provider fails; returns parsed response dict or `None` on failure; skipped when `self._provider == "deepseek_local"` (prevents recursion) |
 | `_context_window_size()` | — | `int` | reads `models.json` context window |
 | `_compress_messages(messages, step)` | `list[dict], int` | `list[dict]` | Keeps last 6 messages, summarises earlier; logs `compress` trajectory step |
 | `_partition_tool_calls(tool_calls)` | `list[dict]` | `(parallel: list, sequential: list)` | Splits by `_PARALLEL_SAFE_TOOLS` membership |
@@ -148,17 +151,21 @@ main.py  ──creates──►  Orchestrator.py  ──spawns thread──►  
 | `_mark_failed(reason)` | `str` | — | `worker/{id}/result.json`, `state.json`, `_finalise_observability()` |
 | `_finalise_observability()` | — | — | `MetricsCollector.flush(db)`, `TrajectoryLogger.finalise(outcome, output, db)` |
 
+**`BaseAgent` instance attributes (selected):**
+- `self._provider: str` — provider name of primary adapter (e.g. `"anthropic"`, `"deepseek_local"`)
+- `self._deepseek_adapter: Any` — lazy-initialised `deepseek_local.Adapter`; `None` until first fallback
+
 **`_PARALLEL_SAFE_TOOLS`** (frozenset): `file_read`, `memory_read`, `embed_text`, `web_fetch`, `http_request`, `context_fetch`, `skill_read`, `code_exec` — dispatched concurrently via `ThreadPoolExecutor`.
 
 **Error classification via `tools/error_types.py`:**
 
 | ErrorType | Recovery in `_tool_loop` |
 |-----------|--------------------------|
-| `RATE_LIMIT` | Rotate API key → retry with exponential backoff |
+| `RATE_LIMIT` | Rotate API key → retry with exponential backoff; if all keys exhausted → `_try_deepseek_fallback()` |
 | `AUTH` | Abort immediately |
 | `CONTEXT_OVERFLOW` | `_compress_messages()` → retry |
-| `NETWORK` | Retry with exponential backoff |
-| `UNKNOWN` | Log + break loop |
+| `NETWORK` | Retry with exponential backoff; after max retries → `_try_deepseek_fallback()` |
+| `UNKNOWN` | Log + `_try_deepseek_fallback()` → break loop if fallback unavailable |
 
 #### Tier classes
 
@@ -166,7 +173,7 @@ main.py  ──creates──►  Orchestrator.py  ──spawns thread──►  
 |---|---|---|
 | `Tier12Agent` | `run()` | `_tool_loop` once |
 | `Tier3Agent` | `run()` | `_decompose`, N × `_tool_loop`, `_synthesize` |
-| `Tier3Agent` | `_decompose(objective, template)` → `list[str]` steps | `Adapter.build_request/call/parse_response`, `_strip_json_fences` |
+| `Tier3Agent` | `_decompose(objective, template)` → `list[str]` steps | `Adapter.build_request/call/parse_response`, `_strip_json_fences`; falls back to `_try_deepseek_fallback` if primary adapter raises |
 | `Tier4Council` | `run()` | N parallel `_tool_loop` threads + `_council_synthesis` |
 | `AgentRunner` | `run(task_packet, record, base_path)` | instantiates correct tier class |
 
@@ -294,6 +301,18 @@ memory/lt.json   list[LTEntry]  — permanent preferences/facts
 
 ---
 
+### `examples/deepseek_local.py`
+**Role:** Standalone interactive demo for DeepSeek-R1 1.5B. No orchestration stack required — imports `Adapter` directly from `tools/providers/deepseek_local.py`.
+
+| Function | CLI flag | Role |
+|---|---|---|
+| `run_chat()` | (default) | Interactive REPL over DeepSeek; prints `<thinking>` trace when `--show-thinking` |
+| `run_single(prompt)` | `--prompt TEXT` | One-shot inference; prints answer (+ thinking if `--show-thinking`) |
+| `run_smoke_test()` | `--smoke-test` | Basic sanity check — sends "Hello" and verifies non-empty response |
+| — | `--backend ollama\|transformers` | Force a specific backend; default tries Ollama first |
+
+---
+
 ### `init.py`
 **Role:** First-run setup wizard, project scaffolding, integrity checker (11 checks), test runner.
 
@@ -407,9 +426,23 @@ All implement `BaseAdapter`. Loaded dynamically via `importlib.import_module("to
 | `openai.py` | OpenAI API | `model, messages, max_tokens, tools` | OpenAI response JSON | standard response dict |
 | `groq.py` | Groq API | `model, messages, max_tokens, tools` | Groq response JSON | standard response dict |
 | `ollama.py` | Local Ollama | `model, messages, stream, options` | Ollama JSON response | standard response dict (text injection fallback) |
+| `deepseek_local.py` | DeepSeek-R1 1.5B (local) | `model, messages, stream, options, _messages_for_transformers` | Ollama JSON **or** `{"_backend":"transformers", "content":...}` | standard response dict; `resp["thinking"]` preserves raw `<think>` trace |
 | `debug.py` | Mock (no network) | passthrough `{system, messages}` | `{"_content": str}` | standard response dict (canned) |
 
 `debug.py` detects pipeline from system prompt keywords → returns shaped canned JSON for classification, skillsmith, ack, mt_judge, context_assessment, task_planning, compression, file_indexing, generic.
+
+**`deepseek_local.py` internals:**
+
+| Class / Function | Role |
+|---|---|
+| `_TransformersBackend` | Class-level singleton for HuggingFace pipeline; thread-safe load via `threading.Lock` + double-checked locking |
+| `_TransformersBackend.available()` | Returns `True` only if both `transformers` **and** `torch` are importable |
+| `_TransformersBackend.load()` | Loads `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` once; GPU if CUDA available, else CPU |
+| `_TransformersBackend.generate(messages, max_tokens)` | Runs inference; applies chat template or `_simple_prompt` fallback |
+| `_extract_thinking(text)` | Strips all `<think>…</think>` blocks; returns `(thinking_trace, clean_answer)` |
+| `_build_tool_hint(tools)` | Converts Anthropic-format tool schemas to text injection block (Ollama/local models have no native tool-use) |
+| `Adapter.call(request)` | Strategy 1: Ollama (`localhost:11434`); Strategy 2: `_TransformersBackend.generate()` if Ollama unreachable |
+| `Adapter.validate_key()` | Always returns `True` — no API key required |
 
 ---
 
@@ -477,10 +510,13 @@ All expose `run(params: dict, context: dict) -> dict`. All results wrapped in `T
 
 ## Data Files
 
+**`config.json` key additions (DeepSeek):**
+- `deepseek_fallback_enabled: bool` (default `true`) — when `true`, any primary-provider failure triggers a transparent retry via DeepSeek-R1 1.5B local before giving up; set `false` to disable
+
 ```
 Pikaia/
 ├── config.json          OrchestratorConfig fields (global defaults + agent loop tuning)
-├── models.json          list[{model_id, provider, context_window, enabled, ...}]
+├── models.json          list[{model_id, provider, context_window, enabled, ...}]  — includes `deepseek-r1:1.5b` (provider: `deepseek_local`, cost_tier: `free`)
 ├── keys.json            {provider_name: api_key_string | list[str]}
 ├── pikaia.db            SQLite WAL — trajectories, tool_events, metrics tables
 ├── tools/tools.json     list[{tool_id, impl, enabled, permissions:[...]}]
@@ -529,13 +565,14 @@ Orchestrator.py
  └─► agent.py                 lazy: AgentRunner.run() in daemon thread
 
 agent.py
- ├─► tools/registry.py        own ToolRegistry for tool loop dispatch
- ├─► tools/schemas.py         get_schemas(tools_allowed)
- ├─► tools/providers/*.py     _load_adapter() for direct LLM calls (build/call/parse)
- ├─► tools/error_types.py     classify_error(exc) for all LLM/tool failures
- ├─► metrics.py               MetricsCollector per run; flush(db) at end
- ├─► trajectory.py            TrajectoryLogger per run; finalise(outcome, db) at end
- └─► db.py                    get_db() for SQLite persistence
+ ├─► tools/registry.py              own ToolRegistry for tool loop dispatch
+ ├─► tools/schemas.py               get_schemas(tools_allowed)
+ ├─► tools/providers/*.py           _load_adapter() for direct LLM calls (build/call/parse)
+ ├─► tools/providers/deepseek_local.py  _try_deepseek_fallback() — lazy-loaded on first primary failure
+ ├─► tools/error_types.py           classify_error(exc) for all LLM/tool failures
+ ├─► metrics.py                     MetricsCollector per run; flush(db) at end
+ ├─► trajectory.py                  TrajectoryLogger per run; finalise(outcome, db) at end
+ └─► db.py                          get_db() for SQLite persistence
 
 metrics.py
  └─► db.py                    log_metrics_batch, log_tool_event
@@ -547,7 +584,8 @@ tools/registry.py
  └─► tools/impl/*.py          mod.run(params, context) → _normalise() → ToolResult
 
 tools/impl/llm_call.py
- └─► tools/providers/*.py     importlib.import_module("tools.providers.{name}")
+ ├─► tools/providers/*.py           importlib.import_module("tools.providers.{name}")
+ └─► tools/providers/deepseek_local.py  fallback when primary provider raises + deepseek_fallback_enabled=True
 
 tools/impl/embed_text.py
  └─► tools/providers/ollama.py  (strategy 2) | hash fallback (strategy 3)
@@ -574,6 +612,9 @@ mt_palace.py
 
 init.py
  └─► test_tools.py            run_tests(base_path, tool, fast) when --test flag given
+
+examples/deepseek_local.py
+ └─► tools/providers/deepseek_local.py  standalone demo — imports Adapter directly; no orchestration stack
 ```
 
 ---

@@ -79,36 +79,35 @@ def _write_lt(base_path: Path, entry: dict) -> None:
 
 
 def _write_mt(base_path: Path, entry: dict, context: dict) -> None:
-    path = base_path / "memory" / "mt.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Auto-embed if embedding is missing
-    if not entry.get("embedding") and entry.get("content"):
-        embedding = _get_embedding(entry["content"], context)
-        if embedding:
-            entry["embedding"] = embedding
-
-    # Palace enrichment: wing/room/entities/importance/AAAK
     try:
-        import importlib.util as _ilu
         import sys as _sys
         _pikaia = str(base_path)
         if _pikaia not in _sys.path:
             _sys.path.insert(0, _pikaia)
-        from mt_palace import MTWriter   # type: ignore[import]
-        entry = MTWriter.enrich(entry, base_path, context)
+        from mt_palace import MTWriter  # type: ignore[import]
+        MTWriter.write(entry, base_path, context)
+        return
     except Exception:
-        pass  # graceful fallback — entry still gets saved without palace fields
+        pass  # fall through to legacy path
 
+    # Legacy fallback: embed + enrich + save to mt.json directly
+    path = base_path / "memory" / "mt.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not entry.get("embedding") and entry.get("content"):
+        embedding = _get_embedding(entry["content"], context)
+        if embedding:
+            entry["embedding"] = embedding
+    try:
+        from mt_palace import MTWriter as _MTW  # type: ignore[import]
+        entry = _MTW.enrich(entry, base_path, context)
+    except Exception:
+        pass
     entries = _load_list(path)
-
-    # Update in-place if same id exists, otherwise append
     existing_idx = next((i for i, e in enumerate(entries) if e.get("id") == entry.get("id")), None)
     if existing_idx is not None:
         entries[existing_idx] = entry
     else:
         entries.append(entry)
-
     _save_json(path, entries)
 
 

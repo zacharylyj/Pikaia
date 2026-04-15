@@ -278,6 +278,9 @@ class BaseAgent:
         if self._provider and self._config.get("key_rotation_enabled", True):
             self._key_pool = _build_key_pool(self._provider, self.base_path)
 
+        # DeepSeek-R1 local fallback adapter (lazy-loaded on first use)
+        self._deepseek_adapter: Any = None
+
         # Observability
         from metrics import MetricsCollector
         metrics_on = task_packet.get("metrics_enabled", self._config.get("metrics_enabled", True))
@@ -559,6 +562,54 @@ class BaseAgent:
         return results
 
     # ------------------------------------------------------------------
+    # DeepSeek-R1 local fallback  (called when primary LLM call fails)
+    # ------------------------------------------------------------------
+
+    def _try_deepseek_fallback(
+        self,
+        system:       str,
+        messages:     list[dict],
+        max_tokens:   int,
+        tool_schemas: list[dict] | None,
+    ) -> "dict | None":
+        """Attempt one call with deepseek-r1:1.5b as a last-resort local fallback.
+
+        Skipped if:
+          - deepseek_fallback_enabled is False in config
+          - the current provider is already deepseek_local (avoid recursion)
+        The adapter is cached after first load so Ollama/transformers pays the
+        startup cost only once per agent run.
+        """
+        if not self._config.get("deepseek_fallback_enabled", True):
+            return None
+        if self._provider == "deepseek_local":
+            return None  # already on DeepSeek — don't recurse
+
+        try:
+            if self._deepseek_adapter is None:
+                from tools.providers.deepseek_local import Adapter as _DSAdapter  # noqa: F401
+                self._deepseek_adapter = _DSAdapter(api_key=None, model_id="deepseek-r1:1.5b")
+                logger.info("agent %s: DeepSeek fallback adapter loaded", self.agent_id)
+
+            req  = self._deepseek_adapter.build_request(
+                system      = system,
+                messages    = messages,
+                max_tokens  = max_tokens,
+                temperature = None,
+                tools       = tool_schemas if tool_schemas else None,
+            )
+            raw  = self._deepseek_adapter.call(req)
+            resp = self._deepseek_adapter.parse_response(raw)
+            logger.info(
+                "agent %s: DeepSeek fallback succeeded (%d out-tokens)",
+                self.agent_id, resp.get("tokens_out", 0),
+            )
+            return resp
+        except Exception as exc:
+            logger.warning("agent %s: DeepSeek fallback failed: %s", self.agent_id, exc)
+            return None
+
+    # ------------------------------------------------------------------
     # ReAct tool loop  (items 1–4, 7, 12)
     # ------------------------------------------------------------------
 
@@ -693,7 +744,22 @@ class BaseAgent:
                     break
 
             if llm_error is not None or not resp:
-                break
+                if llm_error is None:
+                    break  # Empty response without error — give up
+
+                # Primary failed: attempt DeepSeek-R1 1.5B local fallback
+                fallback = self._try_deepseek_fallback(
+                    system, current_msgs, max_tokens_this, tool_schemas
+                )
+                if not fallback:
+                    break  # All providers exhausted — give up
+
+                # Fallback succeeded: replace resp and continue step processing
+                resp      = fallback
+                llm_error = None
+                logger.info("agent %s: recovered via DeepSeek fallback at step %d",
+                            self.agent_id, step)
+                # No break — falls through intentionally to turn_tokens processing
 
             turn_tokens = resp.get("tokens_in", 0) + resp.get("tokens_out", 0)
             total_tokens  += turn_tokens
@@ -933,8 +999,14 @@ class Tier3Agent(BaseAgent):
             request = self._adapter.build_request(
                 system=system, messages=messages, max_tokens=512, temperature=0.0,
             )
-            raw  = self._adapter.call(request)
-            resp = self._adapter.parse_response(raw)
+            try:
+                raw  = self._adapter.call(request)
+                resp = self._adapter.parse_response(raw)
+            except Exception as exc:
+                # Primary adapter failed — try DeepSeek local fallback
+                resp = self._try_deepseek_fallback(system, messages, 512, None)
+                if resp is None:
+                    raise exc
             with self._tokens_lock:
                 self._tokens_used += resp.get("tokens_in", 0) + resp.get("tokens_out", 0)
             content = resp.get("content", "")
