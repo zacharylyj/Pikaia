@@ -47,7 +47,7 @@ Repository = "https://github.com/zacharylyj/Pikaia"
 
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 # ---------------------------------------------------------------------------
 # Test / lint / type-check tooling
