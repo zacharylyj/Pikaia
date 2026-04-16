@@ -1260,21 +1260,32 @@ class Orchestrator:
     def _append_history(self, role: str, content: str) -> None:
         history_path = self._project_path("instances", self.instance_id, "history.json")
         history_path.parent.mkdir(parents=True, exist_ok=True)
-        entries: list[dict] = []
-        if history_path.exists():
-            try:
-                entries = json.loads(history_path.read_text())
-            except Exception:
-                pass
-        entries.append({
+        new_entry = {
             "turn_id":     str(uuid.uuid4()),
             "instance_id": self.instance_id,
             "project":     self.project,
             "role":        role,
             "content":     content,
             "ts":          _now_iso(),
-        })
-        _atomic_write_json(history_path, entries)
+        }
+        # Hold the per-path lock for the entire read-modify-write cycle to
+        # prevent concurrent threads from silently overwriting each other's
+        # appended entries.
+        with _get_history_lock(history_path):
+            entries: list[dict] = []
+            if history_path.exists():
+                try:
+                    entries = json.loads(history_path.read_text())
+                    if not isinstance(entries, list):
+                        logger.warning(
+                            "history.json at %s is not a list (got %s); resetting",
+                            history_path, type(entries).__name__,
+                        )
+                        entries = []
+                except Exception as exc:
+                    logger.warning("Could not read history.json at %s: %s", history_path, exc)
+            entries.append(new_entry)
+            _atomic_write_json(history_path, entries)
 
     def _mt_judge(self, user_msg: str, assistant_msg: str) -> None:
         """Ask mt_judge pipeline if this exchange is worth persisting to MT."""
@@ -1572,3 +1583,19 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         except OSError:
             pass
         raise
+
+
+# Per-path locks for history.json — same pattern as memory_write._CT_LOCKS.
+# Prevents concurrent Orchestrator threads from interleaving their
+# load → append → write sequences on the same history file.
+_HISTORY_LOCKS: dict[str, threading.Lock] = {}
+_HISTORY_LOCKS_META = threading.Lock()
+
+
+def _get_history_lock(path: Path) -> threading.Lock:
+    """Return (creating on first use) the per-path lock for a history.json."""
+    key = str(path.resolve())
+    with _HISTORY_LOCKS_META:
+        if key not in _HISTORY_LOCKS:
+            _HISTORY_LOCKS[key] = threading.Lock()
+        return _HISTORY_LOCKS[key]

@@ -98,29 +98,48 @@ def _write_lt(base_path: Path, entry: dict) -> None:
 
 
 def _write_mt(base_path: Path, entry: dict, context: dict) -> None:
-    try:
-        import sys as _sys
-        _pikaia = str(base_path)
-        if _pikaia not in _sys.path:
-            _sys.path.insert(0, _pikaia)
-        from mt_palace import MTWriter  # type: ignore[import]
-        MTWriter.write(entry, base_path, context)
-        return
-    except Exception:
-        pass  # fall through to legacy path
+    import sys as _sys
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
 
-    # Legacy fallback: embed + enrich + save to mt.json directly
+    _pikaia = str(base_path)
+    if _pikaia not in _sys.path:
+        _sys.path.insert(0, _pikaia)
+
+    # Try the full MemPalace v2 writer first.
+    # Separate the import failure case (mt_palace not available) from the call
+    # failure case (mt_palace loaded but write raised) so we don't accidentally
+    # swallow genuine errors from a successfully imported module.
+    _MTWriter = None
+    try:
+        from mt_palace import MTWriter  # type: ignore[import]
+        _MTWriter = MTWriter
+    except ImportError as exc:
+        _log.debug("mt_palace not importable, using legacy MT path: %s", exc)
+    except Exception as exc:
+        _log.warning("Unexpected error importing mt_palace: %s", exc)
+
+    if _MTWriter is not None:
+        try:
+            _MTWriter.write(entry, base_path, context)
+            return
+        except Exception as exc:
+            _log.warning("MTWriter.write failed, falling back to legacy MT path: %s", exc)
+
+    # Legacy fallback: embed + optional enrich + save to mt.json directly.
+    # Note: we reuse the already-imported _MTWriter for .enrich() if available;
+    # we do NOT attempt a second import.
     path = base_path / "memory" / "mt.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     if not entry.get("embedding") and entry.get("content"):
         embedding = _get_embedding(entry["content"], context)
         if embedding:
             entry["embedding"] = embedding
-    try:
-        from mt_palace import MTWriter as _MTW  # type: ignore[import]
-        entry = _MTW.enrich(entry, base_path, context)
-    except Exception:
-        pass
+    if _MTWriter is not None:
+        try:
+            entry = _MTWriter.enrich(entry, base_path, context)
+        except Exception as exc:
+            _log.debug("MTWriter.enrich skipped: %s", exc)
     entries = _load_list(path)
     existing_idx = next((i for i, e in enumerate(entries) if e.get("id") == entry.get("id")), None)
     if existing_idx is not None:
